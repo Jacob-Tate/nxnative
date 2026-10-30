@@ -461,6 +461,20 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Check:** `t_present_crop`: the window's crop wins, the layer crop is used without one, one larger than the texture is ignored, and a real `nvnQueuePresentTexture` queues the layer crop (that check fails with the old call). On an iPhone 15 Pro in handheld mode Link's Awakening's picture fills the screen's height.
 - **Found on:** [The Legend of Zelda: Link's Awakening](../../dm/games/01006BB00C6F0000/README.md#rendering) (1.1.0, handheld mode on the iPhone).
 
+### Image stores into an attachment of their own pass
+
+- **Symptom:** an effect that stores to a texture through images comes out zero, or partly zero, though its shader runs and its inputs hold data. In DARK SOULS: REMASTERED, whole areas go near-black and flip within two steps as ambient occlusion turns on by zone, with only the surfaces drawn after its composite lit: loose bricks black on a lit floor. A pass dump shows `U … runtime=written reason=image_write` and `Z … store` on the pass.
+- **Cause:** a fragment shader with no colour outputs stores to layers of the texture that is also the pass's colour attachment. Any image store marks every attachment as written, in case it aliases, so the attachment is stored at the pass end, and on a tile-based GPU that puts the tile's old content over the image stores. A standalone Metal program on an M1 keeps at most 66.5% of a shader's stores to the attached layer with `store` (0% in most variants) and all of them with `dontCare`; layers not attached keep theirs. The Switch has no such write-back.
+- **Fix:** a loaded colour attachment that no draw of the pass rasterized into, or cleared, is not stored (`img_dead` in `sd_finish`, `nvn_mtl.m`, from `sd_att.img` and `sd_att.rast`): the pass did not change what it holds.
+- **Found on:** [DARK SOULS: REMASTERED](../../dm/games/01004AB00A260000/README.md#rendering) (its ambient occlusion pass, `c1d0b7f1a8a50799`, 4-layer RG16F).
+
+### Primitive ID in pipelines specialized from a Metal 4 base
+
+- **Symptom:** a fragment shader that reads `gl_PrimitiveID` sees 0 for every primitive on the Mac, while the same draw is right with `DM_PSO_MTL4=0`. In DARK SOULS: REMASTERED, all four triangles of its ambient occlusion pass stored to layer 0, which left the other three layers empty.
+- **Cause:** a Metal bug. A pipeline made with `newRenderPipelineStateBySpecializationWithDescriptor:pipeline:` from a base with unspecialized colour state reads `[[primitive_id]]` as 0. A standalone Metal program on an Apple M1, macOS 26.7.2, reads 0, 1, 2, 3 from a fully specified Metal 4 pipeline and from an `MTLDevice` one, and only 0 from a specialized one. Other GPUs and versions are not tested.
+- **Fix:** a workaround, since the fault is in Metal. A fragment shader whose library contains `air.primitive_id` (`t_lib_prim` in `lib_from_file`, `NvShader.reads_prim`) gets its pipeline through the `MTLDevice` (`pso_build_ex`), so it has no base and no place in the pipeline archive. The library is read at load, so no shader chain change or rebuild is needed. iOS builds use the `MTLDevice` path by default.
+- **Found on:** [DARK SOULS: REMASTERED](../../dm/games/01004AB00A260000/README.md#rendering) (3 of its 3,099 shaders read the primitive ID).
+
 ## Blend, depth and stencil
 
 ### No writes to colour outputs the shader does not write
