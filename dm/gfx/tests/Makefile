@@ -340,6 +340,9 @@ t_clear_tex: t_clear_tex.m $(MTL_T_DEP)
 .PHONY: check_t_clear_tex
 check_t_clear_tex: t_clear_tex
 	MTL_DEBUG_LAYER=1 ./t_clear_tex
+t_image_attachment_store: t_image_attachment_store.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_image_attachment_store.m $(MTL_T_SRC) $(FW)
+check_t_image_attachment_store: RUN_ENV = MTL_DEBUG_LAYER=1
 t_unwritten_store: t_unwritten_store.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_unwritten_store.m $(MTL_T_SRC) $(FW)
 check_t_unwritten_store: RUN_ENV = MTL_DEBUG_LAYER=1
