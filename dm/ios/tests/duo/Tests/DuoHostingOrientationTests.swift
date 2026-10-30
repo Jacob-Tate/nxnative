@@ -5,7 +5,7 @@ import XCTest
 
 final class DuoHostingOrientationTests: XCTestCase {
     @MainActor
-    func testProductionHostingControllerSupportsAllOrientationsInPhoneWindow() async {
+    func testProductionHostingControllerSupportsAllOrientationsInCurrentWindow() async {
         guard let window = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .flatMap(\.windows)
@@ -14,7 +14,6 @@ final class DuoHostingOrientationTests: XCTestCase {
             XCTFail("Expected the harness root in its phone window scene")
             return
         }
-        XCTAssertEqual(UIDevice.current.userInterfaceIdiom, .phone)
         XCTAssertNil(presenter.presentedViewController, "The harness root should be available for a temporary full-screen host")
 
         let host = DmHostingController(rootView: Color.clear)
@@ -34,7 +33,7 @@ final class DuoHostingOrientationTests: XCTestCase {
 
         print("[DUO_HOST_ORIENTATION] phoneWindowIdiom=\(window.traitCollection.userInterfaceIdiom.rawValue) sceneOrientation=\(orientation) unattachedIdiom=\(unattachedIdiom.rawValue) unattachedMask=0x\(String(unattachedMask.rawValue, radix: 16)) attachedIdiom=\(attachedIdiom.rawValue) attachedMask=0x\(String(attachedMask.rawValue, radix: 16)) all=0x\(String(UIInterfaceOrientationMask.all.rawValue, radix: 16))")
         XCTAssertNil(presenter.presentedViewController, "Restore the harness root after the probe")
-        XCTAssertEqual(attachedIdiom, .phone)
+        XCTAssertEqual(attachedIdiom, window.traitCollection.userInterfaceIdiom)
         XCTAssertEqual(unattachedMask, .all)
         XCTAssertEqual(attachedMask, .all, "The production full-screen SwiftUI host must preserve the app's four-orientation policy")
     }

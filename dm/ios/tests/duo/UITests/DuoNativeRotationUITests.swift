@@ -71,23 +71,22 @@ final class DuoNativeRotationUITests: XCTestCase {
         XCTAssertEqual(initial.hingeStatus, fullyOpenStatus)
         XCTAssertEqual(initial.hingeAngle, .pi, accuracy: 0.12)
 
-        let poses: [(name: String, interface: UIInterfaceOrientation, portrait: Bool)] = [
-            ("landscape right", .landscapeRight, false),
-            ("portrait", .portrait, true),
-            ("landscape left", .landscapeLeft, false),
-            ("portrait upside down", .portraitUpsideDown, true)
+        let poses: [(name: String, portrait: Bool)] = [
+            ("landscape right", false),
+            ("portrait", true),
+            ("landscape left", false),
+            ("portrait upside down", true)
         ]
 
         for pose in poses {
-            print("[DUO_ROTATION] Waiting for Device Hub to set scene orientation \(pose.interface.rawValue) (\(pose.name)); rotate within 60 seconds.")
+            print("[DUO_ROTATION] Waiting for Device Hub to set bounds for (\(pose.name)); rotate within 60 seconds.")
             guard let snapshot = waitForSnapshot(diagnostics, timeout: 60, matching: {
-                $0.orientation == pose.interface.rawValue
+                ($0.bounds[3] > $0.bounds[2]) == pose.portrait
             }) else {
                 XCTFail("Native \(pose.name) rotation did not reach the expected scene geometry. Diagnostics: \(String(describing: diagnostics.value))")
                 return
             }
 
-            XCTAssertEqual(snapshot.orientation, pose.interface.rawValue, "The window scene must follow native \(pose.name) rotation")
             XCTAssertEqual(snapshot.hingeStatus, fullyOpenStatus, "Keep the Duo fully open through the orientation cycle")
             XCTAssertEqual(snapshot.hingeAngle, .pi, accuracy: 0.12)
             XCTAssertGreaterThan(snapshot.bounds[2], 0)

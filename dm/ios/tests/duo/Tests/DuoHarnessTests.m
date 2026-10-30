@@ -630,6 +630,76 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     XCTAssertEqualWithAccuracy(metal.drawableSize.height, game.bounds.size.height * screen.nativeScale, 1.0);
 }
 
+- (void)testProductionRootRelayoutsMetalAndInputDuringWindowResizing {
+    UIViewController *root = [self harnessRootViewController];
+    UIView *game = [root valueForKey:@"game"];
+    UIView *pad = [root valueForKey:@"pad"];
+    NSPredicate *touchControlsActive = [NSPredicate predicateWithFormat:@"padOff == NO"];
+    XCTNSPredicateExpectation *ready = [[XCTNSPredicateExpectation alloc] initWithPredicate:touchControlsActive object:pad];
+    XCTAssertEqual([XCTWaiter waitForExpectations:@[ready] timeout:5.0], XCTWaiterResultCompleted);
+    CGRect original = root.view.frame;
+    UIViewAutoresizing originalMask = root.view.autoresizingMask;
+    root.view.autoresizingMask = UIViewAutoresizingNone;
+    const CGSize sizes[] = {{1024, 768}, {744, 900}, {375, 650}, {640, 360}, {500, 500}, {1024, 768}};
+    @try {
+        for (NSUInteger i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+            root.view.frame = (CGRect){CGPointZero, sizes[i]};
+            [root.view setNeedsLayout];
+            [root.view layoutIfNeeded];
+            XCTAssertTrue(CGSizeEqualToSize(root.view.bounds.size, sizes[i]));
+            XCTAssertTrue(CGRectEqualToRect(pad.frame, root.view.bounds));
+            XCTAssertTrue(CGRectContainsRect(root.view.bounds, game.frame));
+            XCTAssertEqualWithAccuracy(game.bounds.size.width / game.bounds.size.height, 16.0 / 9.0, 0.001);
+            CAMetalLayer *metal = (CAMetalLayer *)game.layer;
+            CGFloat scale = root.view.window.windowScene.screen.nativeScale;
+            XCTAssertEqualWithAccuracy(metal.drawableSize.width, game.bounds.size.width * scale, 1.0);
+            XCTAssertEqualWithAccuracy(metal.drawableSize.height, game.bounds.size.height * scale, 1.0);
+            [self assertButton:DM_BTN_A at:[self controlCenterNamed:@"A" inPad:pad] onPad:pad time:i + 1];
+            [pad setValue:@YES forKey:@"tap"];
+            DuoFakeTouch *touch = [self touchAt:CGPointMake(CGRectGetMidX(game.frame), CGRectGetMidY(game.frame)) time:i + 1];
+            [self beginTouches:@[touch] onPad:pad];
+            XCTAssertEqual(duo_harness_input().touch_count, 1);
+            XCTAssertEqualWithAccuracy(duo_harness_input().touches[0].x, 0.5, 0.001);
+            XCTAssertEqualWithAccuracy(duo_harness_input().touches[0].y, 0.5, 0.001);
+            [self endTouches:@[touch] onPad:pad cancelled:NO];
+            [pad setValue:@NO forKey:@"tap"];
+        }
+    } @finally {
+        root.view.frame = original;
+        root.view.autoresizingMask = originalMask;
+        [root.view setNeedsLayout];
+        [root.view layoutIfNeeded];
+    }
+}
+
+- (void)testResizingReleasesHeldInputAndUpdatesVideoTouchCoordinates {
+    const CGRect windows[] = {CGRectMake(0, 0, 1024, 768), CGRectMake(0, 0, 320, 480),
+                              CGRectMake(0, 0, 640, 360), CGRectMake(0, 0, 500, 500)};
+    UIView *pad = [self padForLayout:dm_layout(windows[0], UIEdgeInsetsZero, NO, CGRectNull) bounds:windows[0]];
+    for (NSUInteger i = 0; i < sizeof windows / sizeof windows[0]; i++) {
+        CGRect bounds = windows[i];
+        DmLayout layout = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull);
+        pad.frame = bounds;
+        dm_gamepad_arrange(pad, layout);
+        [pad layoutIfNeeded];
+        XCTAssertEqual(duo_harness_input().buttons, 0);
+        XCTAssertEqual(duo_harness_input().touch_count, 0);
+        XCTAssertEqualWithAccuracy(layout.game.size.width / layout.game.size.height, 16.0 / 9.0, 0.001);
+        [self assertButton:DM_BTN_A at:[self controlCenterNamed:@"A" inPad:pad] onPad:pad time:i + 1];
+        // Tap mode isolates the game's touch viewport from the 3D right-stick gesture area.
+        [pad setValue:@YES forKey:@"tap"];
+        DuoFakeTouch *touch = [self touchAt:CGPointMake(CGRectGetMidX(layout.game), CGRectGetMidY(layout.game)) time:i + 1];
+        [self beginTouches:@[touch] onPad:pad];
+        DuoHarnessInput input = duo_harness_input();
+        XCTAssertEqual(input.touch_count, 1);
+        XCTAssertEqualWithAccuracy(input.touches[0].x, 0.5, 0.001);
+        XCTAssertEqualWithAccuracy(input.touches[0].y, 0.5, 0.001);
+        [pad setValue:@NO forKey:@"tap"];
+    }
+    dm_gamepad_arrange(pad, dm_layout(windows[0], UIEdgeInsetsZero, NO, CGRectNull));
+    XCTAssertEqual(duo_harness_input().touch_count, 0);
+}
+
 - (void)testDuoPortraitKeepsOnlyTopSafeArea {
     CGRect portrait = CGRectMake(0, 0, 744, 1133);
     UIEdgeInsets safe = UIEdgeInsetsMake(54, 20, 34, 24);
@@ -681,15 +751,14 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     }
 #endif
 
-    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
-    NSString *key = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad
-        ? @"UISupportedInterfaceOrientations~ipad" : @"UISupportedInterfaceOrientations";
-    NSSet<NSString *> *supported = [NSSet setWithArray:info[key]];
-    XCTAssertTrue([supported containsObject:@"UIInterfaceOrientationPortrait"]);
-    XCTAssertTrue([supported containsObject:@"UIInterfaceOrientationLandscapeLeft"]);
-    XCTAssertTrue([supported containsObject:@"UIInterfaceOrientationLandscapeRight"]);
-    XCTAssertTrue([supported containsObject:@"UIInterfaceOrientationPortraitUpsideDown"],
-                  @"Both idiom-specific orientation lists should declare all four scene orientations");
+    NSData *plist = [NSData dataWithContentsOfURL:[NSBundle.mainBundle URLForResource:@"Info" withExtension:@"plist"]];
+    NSDictionary *info = [NSPropertyListSerialization propertyListWithData:plist options:0 format:nil error:nil];
+    NSSet *landscape = [NSSet setWithArray:@[@"UIInterfaceOrientationLandscapeLeft", @"UIInterfaceOrientationLandscapeRight"]];
+    XCTAssertEqualObjects([NSSet setWithArray:info[@"UISupportedInterfaceOrientations"]], landscape);
+    NSSet *all = [landscape setByAddingObjectsFromSet:[NSSet setWithArray:@[@"UIInterfaceOrientationPortrait", @"UIInterfaceOrientationPortraitUpsideDown"]]];
+    XCTAssertEqualObjects([NSSet setWithArray:info[@"UISupportedInterfaceOrientations~ipad"]], all);
+    XCTAssertNil(info[@"UIRequiresFullScreen"]);
+
 }
 
 - (void)testInactiveNativeDivisionCanDriveSeparatedLayout {
