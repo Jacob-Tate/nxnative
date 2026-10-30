@@ -246,6 +246,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** the reader (`raw_shaders`) takes them. Both neighbours can pass the header and length checks, so it takes only a code area the code builds the address of, the nearest one to the control section's.
 - **Found on:** [Advance Wars 1+2: Re-Boot Camp](../../dm/games/0100300012F2A000/README.md) (Unity 2020.2 with Bink 2's Unity plugin). Of 25 `main`s on hand no other has such control sections.
 
+### Control sections and code areas in YCD paks
+
+- **Symptom:** the shader split finds no shaders (`the shader split found no shaders in main or the RomFS`), and the game draws nothing: every program `[RED] shader … is not in the shader map`, `program has no vertex shader`.
+- **Cause:** Yacht Club Games' engine keeps its shaders in a YCD container (`shaders.pak.yc`) that no reader took. A YCD file starts with `YCD\0`, version 8; a pak's index is a list of 16-byte records, a name record and a data record per entry, each pointing at its target relative to its own `+8`. Each shader is an entry `shaders/<name>.vert.bin` or `.frag.bin`: `{u32 control length (0x880), u32 code length}`, the control section, then the code area, uncompressed. `DM_NVN_SHDUMP` saved the drawn programs; their control sections and code areas were found back to back in the pak.
+- **Fix:** `dm/gfx/tools/ycd.py` reads a YCD file table (sound banks and controller maps hold other data and give no entries), and `shader_split.py`'s `ycd_shaders` takes every `.bin` entry, checked as any control section and code area. The program pairs, in the pak's `shaders/shader.db`, are not read.
+- **Found on:** [Mina the Hollower](../../dm/games/0100DCD01F306000/README.md): 114 entries, 110 unique shaders (17 vertex, 93 pixel), every program of the intro, the menus and the opening.
+
 ### SNVN program records in Retro Studios' RFRM forms
 
 - **Symptom:** the provisional split finds only `main`'s 294 GLSLC outputs; the 3D scene and the title logo are magenta, with `[RED] shader … is not in the shader map` lines.

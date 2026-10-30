@@ -2341,6 +2341,21 @@ def ue_shaders(d, label):
         out.append((f'{label}#UE{i}', st, ctl, code))
     return out
 
+def ycd_shaders(d, label):
+    """Shaders of a Yacht Club Games YCD container (Mina the Hollower's shaders.pak.yc: 20 .vert.bin and 94 .frag.bin entries): each .bin entry is {u32 control length (0x880),
+    u32 code length}, the control section, then the code area. The stages combine at run time (the pairs are in its shaders/shader.db, not read here), so none are paired"""
+    import ycd
+    out = []
+    for name, off, size in ycd.entries(d, label):
+        if not name.endswith('.bin') or size < 8: continue
+        cn, kn = struct.unpack_from('<II', d, off)
+        if 8 + cn + kn != size: red(f'{label}/{name}: control {cn:#x} + code {kn:#x} does not fill the entry ({size:#x})')
+        ctl, code = d[off + 8:off + 8 + cn], d[off + 8 + cn:off + size]
+        st = glslc_stage(ctl, code); why = check(f'{label}/{name}', st, ctl, code) if st else 'no stage'
+        if why: red(f'{label}/{name}: {why}')
+        out.append((f'{label}/{name}', st, ctl, code))
+    return out
+
 def var_pairs(found):
     """(vertex key, pixel key) within the same BNSH variation; (vertex key, pixel key, 'prog') within the same BAHS program variation (bahs_variations).
     The tables stay separate; dmsh_build.py pads against both, as the pipeline prebuild uses both."""
@@ -2430,6 +2445,9 @@ def scan_file_in(args):
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:8] == GFPAK:   # a Game Freak archive (gfpak_members): each entry scanned as a file of its own (the shaders are BNSH entries)
         for nm, m in gfpak_members(open(path, 'rb').read(), '/' + rel): scan_blob(m, f'/{rel}{nm}', found)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if head[:4] == b'YCD\0':   # a Yacht Club Games container (ycd.py): its shaders/*.bin entries
+        found += ycd_shaders(open(path, 'rb').read(), '/' + rel)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == b'SRYK':
         import vbf

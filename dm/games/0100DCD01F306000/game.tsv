@@ -1,0 +1,41 @@
+# Game profile of Mina the Hollower (Switch, base game v0 + update 1.0.5 = v1). Plays on the Mac
+# Format: see dm/games/README.md
+# Yacht Club Games' own engine, NVN, SDK 21.4.3. Every RomFS file is a YCD container (*.yc); the shaders are control sections and code areas in shaders.pak.yc (dm/gfx/tools/ycd.py)
+
+# ---- Identity ----
+title_id	0100DCD01F306000
+program_id	0100DCD01F306000
+
+# ---- App ----
+name	Mina the Hollower
+ipa	MinaTheHollower.ipa
+app_category	public.app-category.action-games
+
+# ---- Versions ----
+build	v1	1.0.5	main=2bc484524f0c86bc7c2228d6fbfb0817	sdk=cb82ed52216313df5626154efb64d45f
+package	v1
+shader_versions	v1
+
+# ---- Files ----
+# every module main imports from
+modules	main sdk
+romfs_marker	default.sndbnk.yc
+zip_store	.yc:.metallib
+
+# ---- Memory ----
+# The NPDM declares 32 MB of system resource (virtual address memory) and main never sets a heap: a 5 GB block with a 4.375 GB alias region, where the game maps its memory itself.
+# Its regions: malloc's StandardAllocator (16 GB asked, which the host caps), two TLSF heaps of 4 GB each that the rewriter cuts to 1 GB and 256 MB (patches.py), a 64 MB one and
+# thirteen 16 MB pools. 1.51 GB mapped from boot into the first minute of play (README.md, Memory)
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 32 MB of system resource
+sys_resource	0x2000000
+# malloc's StandardAllocator over 16 GB gets 2.5 GB (hle_svc.c, the host's StandardAllocator cap): the regions made after it take 1.55 GB (the 1 GB and 256 MB heaps, 64 MB, thirteen
+# 16 MB pools at 18 MB spacing), more than the 256 MB the default leaves; 4.375 GB less the 62 MB node area, those and 256 MB for later regions, in 32 MB steps. It maps 1.28 GB
+stdalloc_cap	0xa0000000
+
+# ---- Shader split ----
+shader_groups	/=romfs
+shader_note	Mina the Hollower shaders (shaders.pak.yc)
