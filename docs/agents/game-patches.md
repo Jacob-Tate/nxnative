@@ -82,6 +82,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [Fire Emblem Engage](#fire-emblem-engage) | 1 | 0 | 0 | 0 | 0 | `build` → `engine` |
 | [Fire Emblem: Three Houses](#fire-emblem-three-houses) | 12 | 0 | 0 | 0 | 0 | `build` → `game`, `build` → `host` |
 | [Hyrule Warriors: Age of Calamity](#hyrule-warriors-age-of-calamity) | 0 | 0 | 3 | 0 | 0 | `build` → `game` |
+| [Library of Ruina](#library-of-ruina) | 3 | 0 | 0 | 0 | 0 | `build` |
 | [Luigi's Mansion 3](#luigis-mansion-3) | 0 | 0 | 0 | 0 | 1 | `build` → `engine` |
 | [Mario + Rabbids Kingdom Battle](#mario--rabbids-kingdom-battle) | 6 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Mario + Rabbids® Sparks of Hope](#mario--rabbids-sparks-of-hope) | 7 | 0 | 0 | 0 | 0 | `build` → `game` ×2 |
@@ -331,6 +332,17 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - frame step `+0x8d94b0`: KTGL device config present interval: 1 above a 30 fps cap, else the game's 2 (state page target fps)
   - frame step `+0x166dab4`: KIDS frame task: fps and the frame-rate block = the cap, vsyncs per update marked; device frame rate 59.94 / vsyncs (state page target fps; 0 = the game's 30)
   - frame step `+0x166dc60`: KIDS frame task: the frame-rate object's steps × its fps × vsyncs per update / 60 (state page target fps; 0 = as the game sets them)
+
+### Library of Ruina
+
+[Library of Ruina](../../dm/games/0100E7A019246000/README.md), `0100E7A019246000`, [patches.py](../../dm/games/0100E7A019246000/patches.py).
+
+- **`build`**, race, at goal, judgement: EntryScene splash and load order. The game's own race between its splash and its Addressables load; its fields and methods are this build's, and no engine or SDK behaviour is wrong
+
+- **1.03 `main`** `aeea627d…` ([patches.py:20](../../dm/games/0100E7A019246000/patches.py#L20))
+  - cut `+0x21100e0`: GotoTitleOrSelectLanguge entry → OnPlayEnd first when _option is null
+  - cut `+0x210f5c0`: OnPlayEnd entry → return when _option exists
+  - cut `+0x353dcf0`: the check and the guard, over LoadingManager.TestStart
 
 ### Luigi's Mansion 3
 
