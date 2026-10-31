@@ -1,0 +1,38 @@
+# Castlevania: Belmont's Curse (Switch, update 1.1.0 = v65536). Plays on the Mac; not yet run on an iPhone.
+# Format: see dm/games/README.md
+# Unity 2022.3.62f2 IL2CPP, FMOD, SDK 19.3.16, NVN. subsdk0 is NintendoSDK_movie.
+
+# ---- Identity ----
+title_id	0100BA4026E94000
+program_id	0100BA4026E94000
+
+# ---- App ----
+name	Castlevania: Belmont's Curse
+ipa	CastlevaniaBelmontsCurse.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v65536	1.1.0	main=0f1169aa7d0fa4529c861f96adec306e	subsdk0=8205ead9e1f93d8b2337feaddefac330	sdk=8af286d7bfb124125a15e96a39cb1ab7
+package	v65536
+shader_versions	v65536
+
+# ---- Files ----
+# load order as on Horizon: main, subsdk*, sdk
+modules	main subsdk0 sdk
+romfs_marker	Data/globalgamemanagers
+zip_store	.assets:.bank:.bundle:.dat:.json:.nro:.ress:.metallib
+
+# ---- Memory ----
+# NPDM: 16 MB of system resource, virtual address memory; the game never sets a heap. The layout of the other Unity 2022.3 profiles: a 5 GB block with a 4.375 GB alias region.
+# The 1 GB pool keeps StandardAllocator's region at 0.94 GB; Unity's own regions then peak at alias +3.51 GB (README.md#memory).
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0x40000000
+sys_resource	0x1000000
+# the game calls nvnDeviceSetDepthMode with near = 0
+depth_mode	zero
+
+# ---- Shader split ----
+shader_groups	/Data/=data /.nrr/=nrr /Plugins/=plugins
+shader_note	Castlevania: Belmont's Curse shaders
