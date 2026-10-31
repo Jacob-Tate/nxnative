@@ -259,7 +259,7 @@ Under a game, "60 fps with 1.2.0" means it runs at 60 fps (30 on the Switch) wit
 </tr>
 <tr>
 <td align="center" valign="top" width="33%"><img src="docs/images/metroid-prime-remastered.jpg" width="256" alt="Metroid Prime Remastered"><br><small><b><a href="dm/games/010012101468C000/README.md">Metroid Prime Remastered</a></b></small></td>
-<td></td>
+<td align="center" valign="top" width="33%"><img src="docs/images/library-of-ruina.jpg" width="256" alt="Library of Ruina"><br><small><b><a href="dm/games/0100E7A019246000/README.md">Library of Ruina</a></b></small></td>
 <td></td>
 </tr>
 </table>
