@@ -2,7 +2,7 @@
 
 Update 1.1.0 (v65536) over the base game, SDK 19.3.16, Unity 2022.3.62f2 IL2CPP with FMOD on NVN. Modules `main`, `subsdk0` (NintendoSDK_movie) and `sdk`, and one NRO in the RomFS that the game loads at run time. Both DLC NSPs are licences with no content.
 
-Status: on the Mac, from a fresh save through the first-launch settings, the title, New Game, the opening movies and story scene, and into the Sewers: walking, jumping, spells, a first enemy and the tutorial prompts, with no `[RED]` line from the game or crash over runs of up to 30 minutes. These runs used scripted input with the Mac's display off, so the game has not been played by hand and its frame pacing has not been judged on a screen. An unsigned IPA is built; it has not been run on an iPhone.
+Status: on the Mac, from a fresh save through the first-launch settings, the title, New Game, the opening movies and story scene, and into the Sewers: walking, jumping, spells, a first enemy and the tutorial prompts, with no `[RED]` line from the game or crash over runs of up to 30 minutes. These runs used scripted input with the Mac's display off, so the game has not been played by hand and its frame pacing has not been judged on a screen. On an iPhone, it was reported working with this profile (2026-10-31); no log was read from that run.
 
 ## What it needs
 
@@ -45,6 +45,6 @@ No new mechanism. An SDK 19.3.16 instance of [the SDK's address-region node area
 ## Open
 
 - Play by hand on the Mac with the display on, and judge frame pacing there. With the display off, the host logs `display link silent` and a present-thread [rescue](../../../docs/reference/frame-rate.md#present-thread-rescues-a-silent-display-link) with a 137 ms hitch at each 60 s retry; those come from the test conditions, not the game.
-- Run the IPA on an iPhone (memory, and Unity's thread pool on a slower CPU).
+- On an iPhone: read a log from a longer session (memory, and Unity's thread pool on a slower CPU).
 - Resume from a save made during the opening replays the opening. Whether a save from a later checkpoint resumes in place was not reached.
 - Later areas: whether a request larger than the holes appears (`DM_REGIONS`). Running out would show as [a null-based write in Unity's allocator](../../../docs/reference/memory.md#size-class-alignment-doubles-unitys-regions).
