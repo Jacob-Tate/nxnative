@@ -1,5 +1,5 @@
 // iOS front end (the iOS implementation of front.h): portrait puts 16:9 video above the gamepad; native horizontal folds set the separation when available.
-// With a TV connected the Metal view is on the TV and the phone shows the pad (DmTVSceneDelegate).
+// With a TV connected the Metal view is on the TV and the phone shows the pad (DmTVSceneDelegate), unless the player keeps the picture on the device (DM_TV_MIRROR).
 // The host runs on the big-stack thread started by main.m; front_run runs the guest directly on the calling thread.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -62,7 +62,7 @@ static CGRect fit_16_9(CGRect b) {   // the largest centered 16:9 rectangle in b
     if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
     return CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
 }
-static void tv_attach(void);
+static void tv_game_started(void);
 
 @interface DmRootView : UIView
 @end
@@ -158,7 +158,7 @@ static void launcher_done(void) { [g_root startGame]; }
     if (self.fps) [self.view addSubview:self.fps];
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
     UIApplication.sharedApplication.idleTimerDisabled = YES;
-    tv_attach();   // a TV connected while the launcher showed
+    tv_game_started();   // a TV connected while the launcher showed
     front_ios_boot();
 }
 - (void)viewDidLayoutSubviews {
@@ -236,6 +236,17 @@ static void tv_attach(void) {
     dm_set_opmode(1);
     LOG("front end: TV connected (%.0fx%.0f points), the picture moves there at %.0fx%.0f, console mode", g_tv.bounds.size.width, g_tv.bounds.size.height, f.size.width * v.layer.contentsScale, f.size.height * v.layer.contentsScale);
 }
+// Keep picture on device: the launcher's choice is known only when the game starts, so a TV connected before that has a scene with a window by now. Without a registered accessory (iOS 27) or
+// a visible window (iOS 26) iOS mirrors the phone, so nothing moves and the renderer draws one picture as without a TV
+static int tv_mirror(void) { const char *e = getenv("DM_TV_MIRROR"); return e && atoi(e); }
+static void tv_game_started(void) {
+    if (!tv_mirror()) { tv_attach(); return; }
+#if defined(__IPHONE_27_0)
+    if (@available(iOS 27.0, *)) { if (g_root.tv) [g_root unregisterSceneAccessory:g_root.tv]; g_root.tv = nil; }
+#endif
+    g_tv.hidden = YES; g_tv = nil;
+    LOG("front end: the picture stays on the device, any TV mirrors it (DM_TV_MIRROR)");
+}
 static void tv_detach(void) {
     DmGameView *v = g_root.game; g_tv = nil;
     if (v && v.superview != g_root.view) { [g_root.view insertSubview:v atIndex:0]; [g_root.view setNeedsLayout]; }
@@ -247,12 +258,13 @@ static void tv_detach(void) {
 @end
 @implementation DmTVSceneDelegate
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)o {
+    if (g_root.game && tv_mirror()) { LOG("front end: TV connected, it mirrors the device (DM_TV_MIRROR)"); return; }   // iOS 26: the Info.plist entry still offers the scene
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     self.window.rootViewController = [DmTVVC new];
     self.window.hidden = NO;   // without a window iOS goes on mirroring the phone; not key, so the phone's window keeps the keyboard
     g_tv = self.window; tv_attach();
 }
-- (void)sceneDidDisconnect:(UIScene *)s { if (g_tv == self.window) tv_detach(); self.window = nil; }
+- (void)sceneDidDisconnect:(UIScene *)s { if (self.window && g_tv == self.window) tv_detach(); self.window = nil; }
 @end
 
 // Thermal state and screen brightness for the power and present rows every 300 frames (hle_nvn.c; its weak defaults return -1 on the Mac). thermalState: 0 nominal, 1 fair, 2 serious, 3 critical.
