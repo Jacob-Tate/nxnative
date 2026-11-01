@@ -1081,6 +1081,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** the per-shader key covers the pairs, and a paired vertex shader's key also covers its pixel shaders' keys (`shader_key`, `pair_keyed`), so a change to a profile's pairs rebuilds what it affects ([Pixel shader inputs the vertex shader does not write](#pixel-shader-inputs-the-vertex-shader-does-not-write)).
 - **Found on:** [13 Sentinels: Aegis Rim](../../dm/games/01003FC01670C000/README.md).
 
+### Partial vertex builds missing paired pixel sources
+
+- **Symptom:** a full build reports successful shaders, but `metal-tt` rejects its pipeline archive with fragment inputs not written by the vertex shader. Fifteen cached vertices lacked default outputs in DRAGON QUEST I & II.
+- **Cause:** a partial build requested only its vertex keys. `vs_pad` skipped absent paired pixel MSL, then cached the incomplete vertex under a key that already included those pixel shaders' input digests. A later full build restored it before pixel-first finishing and never padded that cache hit again.
+- **Fix:** include available paired pixel shaders in partial build keys and output cleanup, then finish pixels before vertices. Do not publish a paired vertex cache entry while any paired pixel MSL is missing. The code fingerprint excludes the old incomplete cache entries; the Metal source cache still reuses unchanged complete libraries.
+- **Found on:** [DRAGON QUEST I & II HD-2D Remake](../../dm/games/0100D7C01F254000/README.md#found-on-this-game), while building its Mac pipeline archive.
+- **Check:** `test_shader_toolchain_cache.py` requests a vertex alone, exercises dependency cleanup and pixel-first finishing, and checks that padding survives publication and a later full-cache restore. A missing pixel source prevents publication.
+
 ### Target selection keeps the shader analysis files in the cache
 
 - **Symptom:** a repeated iOS-only shader build crashes with `FileNotFoundError` for `<key>_b.json` in the Mac output directory; requesting only Mac libraries with `IOSOUT` set still compiles iOS side libraries.
