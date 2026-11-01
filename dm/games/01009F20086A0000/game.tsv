@@ -1,0 +1,40 @@
+# Ikaruga (Treasure's game in Nicalis's Switch port on NVN, SDK 3.5.0), update v131072 = 1.0.2.
+# Started from the NSP script's provisional profile; the memory layout is the one it guessed, which boots and plays. No code of the game is cut.
+# RomFS: three .arc archives, the sound (BFSAR, BFSTM) and two fonts. The shaders are compiled into main: 365 unique GLSLC outputs.
+
+# ---- Identity ----
+title_id	01009F20086A0000
+program_id	01009F20086A0000
+
+# ---- App ----
+name	Ikaruga
+ipa	Ikaruga.ipa
+app_category	public.app-category.arcade-games
+
+# ---- Versions ----
+build	v131072	1.0.2	main=360954416f3ae3bff4fe9ec069a4095d	sdk=867b345248124ef3d70e3202e221e978
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# every module main imports from
+modules	main sdk
+romfs_marker	tex.arc
+zip_store	.arc:.bfsar:.bfstm:.ttc:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region (the same 4 GB layout as Hyrule Warriors: Definitive Edition, SDK 3.5.1)
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares no system resource, so no virtual address memory; nninitStartup sets a 3.14 GB heap, of which about 400 MB is resident on the Mac in the first chapter
+sys_resource	0x0
+
+# ---- Graphics ----
+# the game calls nvnDeviceSetDepthMode with near = 0; it decides the mode of the pipeline bases made before the game runs
+depth_mode	zero
+
+# ---- Shader split ----
+shader_groups	/sound/=sound /font/=font
+shader_note	Ikaruga shaders

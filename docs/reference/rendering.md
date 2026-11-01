@@ -871,6 +871,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Fix:** a single-sample source is drawn into the destination as a whole-level scaling copy with bilinear filtering, converting the format (`copy_t2t`, through `copy_t2t_draw`; [Copies a blit cannot do, drawn](#copies-a-blit-cannot-do-drawn)).
 - **Found on:** [Bayonetta 2](../../dm/games/01007960049A0000/README.md): its bloom from a 320x176 target into 80x48 and 48x32 textures, and its 1280x720 BGRA8 frame into an RGBA8 texture of the same size.
 
+### `TiledDownsample` left unimplemented
+
+- **Symptom:** `[RED] NVN unimplemented function called: nvnCommandBufferTiledDownsample`; a 3D scene that stays black while what is drawn after the resolve (bullets, effects, HUD) shows.
+- **Cause:** the host had `nvnCommandBufferDownsample` and its texture view form, not the tiled forms, which differ only in how Tegra's tiled cache is used. The stub left the destination unwritten.
+- **Fix:** `nvnCommandBufferTiledDownsample` and `nvnCommandBufferTiledDownsampleTextureView` record the same resolve as the plain forms (`rec_downsample`).
+- **Found on:** [Ikaruga](../../dm/games/01009F20086A0000/README.md): its stage, enemies and ship are drawn at 2 samples and resolved this way.
+
 ### Depth-stencil copies carry the stencil
 
 - **Symptom:** no ambient occlusion (Mac); on a device the result depends on whatever that memory holds.

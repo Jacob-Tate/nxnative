@@ -2512,6 +2512,11 @@ NVN(nvnCommandBufferDownsample, void, NVNcommandBuffer *c, const NVNtexture *s, 
 NVN(nvnCommandBufferDownsampleTextureView, void, NVNcommandBuffer *c, const NVNtexture *s, const NVNtextureView *sv, const NVNtexture *d, const NVNtextureView *dv) {
     rec_downsample(c, s, sv, d, dv, (uint64_t)__builtin_return_address(0));
 }
+// The tiled forms differ only in how Tegra's tiled cache is used; the destination ends up the same (Ikaruga resolves its 3D scene with TiledDownsample: without it the stage stays black)
+NVN(nvnCommandBufferTiledDownsample, void, NVNcommandBuffer *c, const NVNtexture *s, const NVNtexture *d) { rec_downsample(c, s, NULL, d, NULL, (uint64_t)__builtin_return_address(0)); }
+NVN(nvnCommandBufferTiledDownsampleTextureView, void, NVNcommandBuffer *c, const NVNtexture *s, const NVNtextureView *sv, const NVNtexture *d, const NVNtextureView *dv) {
+    rec_downsample(c, s, sv, d, dv, (uint64_t)__builtin_return_address(0));
+}
 
 // CPU texture write (NVN WriteTexels): texture storage lives in pool memory in Tegra block-linear layout; decode the whole level → patch the region → re-encode.
 // Write protection is lifted and the range marked dirty first, so the replay layer re-uploads it the next time it is used
