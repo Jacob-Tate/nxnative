@@ -769,7 +769,7 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Cause:** the general geometry replay (`nvn_geometry.inc`) handled each draw on its own. It waited for the GPU before every indexed draw (the indices are assembled on the CPU), ended the open render pass, and ran four encoders: the vertex capture, the geometry kernel, the index compaction in one GPU thread, and the raster draw reopening the pass with its loads.
 - **Fix:**
   - CPU index assembly waits when pending or current/prior GPU writes, unknown ranges or sparse aliases prevent a safe read (`geo_index_wait`); native capture retains GPU ordering, and unique capture indices use a bounded bitset instead of `qsort`;
-  - the compaction (`k_nvn_geo_pack_msl` in `nvn_geometry.h`) uses three blocked parallel prefix-scan stages (`geo_pack_count`, `geo_pack_scan`, `geo_pack_write`) with threadgroup barriers;
+  - the compaction (`dm/gfx/msl/geo_pack.metal`) uses three blocked parallel prefix-scan stages (`geo_pack_count`, `geo_pack_scan`, `geo_pack_write`) with threadgroup barriers;
   - the first geometry draw of a run looks ahead (`geo_run_walk`, with state replay only) across the geometry draws that follow it with only state, query reports and event signals in between. It encodes all their vertex captures in one render pass and all their kernels and compactions in one compute pass. Each later draw of the run then only rasterizes its prepared output in the open render pass, omitting inactive colour attachments across the run when `geo_color_omit` holds.
 - **Found on:** [NieR:Automata The End of YoRHa Edition](../../dm/games/010056B015FE8000/README.md) and [US 1.0.3](../../dm/games/010056B015FE8000/README.md): about 70 index-build draws a frame in the flight section and up to 932 in heavy outdoor combat.
 
@@ -885,6 +885,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Cause:** the host took `nvnCommandBufferDownsample` only as a multisample resolve and skipped the rest.
 - **Fix:** a single-sample source is drawn into the destination as a whole-level scaling copy with bilinear filtering, converting the format (`copy_t2t`, through `copy_t2t_draw`; [Copies a blit cannot do, drawn](#copies-a-blit-cannot-do-drawn)).
 - **Found on:** [Bayonetta 2](../../dm/games/01007960049A0000/README.md): its bloom from a 320x176 target into 80x48 and 48x32 textures, and its 1280x720 BGRA8 frame into an RGBA8 texture of the same size.
+
+### `TiledDownsample` left unimplemented
+
+- **Symptom:** `[RED] NVN unimplemented function called: nvnCommandBufferTiledDownsample`; a 3D scene that stays black while what is drawn after the resolve (bullets, effects, HUD) shows.
+- **Cause:** the host had `nvnCommandBufferDownsample` and its texture view form, not the tiled forms, which differ only in how Tegra's tiled cache is used. The stub left the destination unwritten.
+- **Fix:** `nvnCommandBufferTiledDownsample` and `nvnCommandBufferTiledDownsampleTextureView` record the same resolve as the plain forms (`rec_downsample`).
+- **Found on:** [Ikaruga](../../dm/games/01009F20086A0000/README.md): its stage, enemies and ship are drawn at 2 samples and resolved this way.
 
 ### Depth-stencil copies carry the stencil
 
@@ -1130,11 +1137,19 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 
 - **Found on:** [Digimon Story Cyber Sleuth: Complete Edition](../../dm/games/010014E00DB56000/README.md): the USM movies' H.264 is decoded through the SDK's movie library (the host's decoder) into NV12 buffers (3,110,400 bytes a 1920x1080 frame); the game uploads the planes into a `GL_RED` and a `GL_RG` texture (two `glTexSubImage2D` a frame) and converts YUV in its own shader (in `main`, `SamplerY` / `SamplerUV`).
 
+### Image stores into an attachment of their own pass
+
+- **Symptom:** an image-only fragment draw's writes disappear from the subresource also bound as its color attachment when the pass ends; other image layers retain their writes.
+- **Cause:** a writable image or storage alias marked every attachment written, which retained the tile store. For a loaded color attachment with no raster output or clear, that store writes the old tile contents over the shader's image writes to the same texture. Disabling the unwritten-store optimization did not avoid this correctness fault.
+- **Fix (resolved in synthetic GPU tests; game validation open):** track possible shader writes separately from color-tile writes. A loaded color attachment with possible image/storage writes and no tile writes uses `DontCare` at pass end, independently of the optimization switches. Record physical color writes before resetting a merged pipeline's logical-output map; specialized fragments have conservative unknown outputs. Pending and explicit clears count as tile writes. Depth/stencil and non-loaded attachments retain their existing decisions. Mixed raster/clear and image writes to the same subresource are outside this proof and still retain the tile store.
+- **Check:** `make -C dm/gfx/tests GAME=<id> check_t_image_attachment_store` executes literal shaders through production draw replay and reads all four image layers on the GPU, with the unwritten-store optimization on and off. It also checks raster outputs, an earlier raster draw followed by an image-only draw, pending and explicit clears, unknown output reflection, a zero channel mask, a native `DontCare`-load control, and physical/logical output mapping. `t_unwritten_store` additionally preserves depth writes with a possible image alias.
+- **Found on:** [DARK SOULS: REMASTERED](../../dm/games/01004AB00A260000/README.md#rendering), reported and diagnosed by Jacob-Tate in [#187](https://github.com/seedds/nxnative/issues/187#issuecomment-6519569185), with the original store fix in [34c7453](https://github.com/Jacob-Tate/nxnative/commit/34c7453e081203627752edd877dde40452afe7b2). Independently reproduced with synthetic shaders on an Apple M2 Max, macOS 26.6; no local game or iOS validation.
+
 ### Unwritten attachment stores without lookahead
 
 - **Symptom:** read-only depth/stencil attachments are written back after every pass, and the periodic unwritten-store savings counter remains zero with the default configuration.
 - **Cause:** `udc_note_draw` and `sd_finish` returned early when `DM_NVN_TBDR` was off. This also disabled the local unwritten-attachment proof, although it does not depend on future sampled-texture readers. The broader lookahead remains disabled because it does not understand bindless readers.
-- **Fix:** collect per-pass write facts independently of the lookahead switch and omit only stores of attachments that were loaded and provably unchanged. Clears, depth writes, stencil writes and possible writable image/atomic/storage aliases retain their stores, except for the [image-only colour attachment rule](#image-stores-into-an-attachment-of-their-own-pass). Lookahead, pass merging and cross-submission invalidation remain disabled. `DM_NVN_UNWRITTEN_DC=0` restores store-all behavior, except for that rule.
+- **Fix:** collect per-pass write facts independently of the lookahead switch and omit only stores of attachments that were loaded and provably unchanged. Clears, depth writes, stencil writes and possible writable image/atomic/storage aliases conservatively retain stores, except for the mandatory [image-only color-attachment rule](#image-stores-into-an-attachment-of-their-own-pass). Lookahead, pass merging and cross-submission invalidation remain disabled. `DM_NVN_UNWRITTEN_DC=0` disables optional unwritten-store savings; the image-write preservation rule stays active.
 - **Check:** `make -C dm/gfx/tests GAME=<id> check_t_unwritten_store` performs real GPU readback against a store-all control and literal color/depth/stencil values, with lookahead disabled. It covers read-only depth/stencil, depth writes, stencil writes, pending clears, and writable images (including native image atomics) and both storage-buffer binding forms. `t_unwritten_store --bench` runs a synthetic 32-pass 1080p workload with balanced on/off order; it is not a game FPS measurement.
 - **Found on:** [NieR:Automata US 1.0.3](../../dm/games/010056B015FE8000/README.md#factory-combat-capture-and-9s-texture-follow-up), during iPhone factory-combat performance investigation. The change passes the GPU proof and rendering regressions on Mac; iPhone gameplay benefit remains to be measured.
 
