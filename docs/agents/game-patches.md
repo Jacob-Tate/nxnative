@@ -21,7 +21,7 @@ A patch's binding is what its correctness is anchored to, from the loosest. A pa
 
 ## Gaps
 
-Every patch bound tighter than it could be: the open gaps, then the blocked, kept and unreviewed ones; in each, those reaching the most games first (the games whose profiles register the builds it touches), then those farthest from their goal.
+Every patch bound tighter than it could be: the open gaps, then the blocked, kept and unreviewed ones; in each, those reaching the most games first (the games whose profiles register the builds it touches), then those farthest from their goal. 1 patch has no reviewed goal yet.
 
 | Now → goal | Patch | Purpose | Status | Evidence | Games | Where | Why |
 |---|---|---|---|---|---|---|---|
@@ -67,6 +67,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | `build` → `game` | 60 fps frame step and render scale (ksys::VFR) | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) | the game's own frame code; the frame-step state page is general |
 | `build` → `game` | 60 fps frame step: the KIDS frame task and frame-rate block | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) | the game's own frame code; only the host's frame-step state page is shared. Fire Emblem: Three Houses and Taiko Risshiden V DX run on KTGL too, with other frame code |
 | `build` → `game` | frame step floor 2 → 1 vsync, and its frame step | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) | the game's own clock floor and step |
+| `build` → unreviewed | KTGL memory pool sizes at boot: 3500 / 500 / 400 MB → 3000 / 250 / 200 MB | memory | unreviewed | judgement | 1 | [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md) | a pool in the residency set is wired whole; a general answer would wire only the used part of a pool, which the host cannot do while a pool is one zero-copy buffer |
 
 ## Summary
 
@@ -90,6 +91,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [NieR:Automata The End of YoRHa Edition (0100B8E016F76000)](#nierautomata-the-end-of-yorha-edition-0100b8e016f76000) | 8 | 0 | 0 | 0 | 1 | `build` → `game` ×2 |
 | [Paper Mario: The Thousand-Year Door](#paper-mario-the-thousand-year-door) | 1 | 0 | 1 | 0 | 0 | `build` → `game` |
 | [Pokémon Brilliant Diamond](#pokémon-brilliant-diamond) | 0 | 0 | 0 | 0 | 1 | `build` → `engine` |
+| [Pokémon Pokopia](#pokémon-pokopia) | 3 | 0 | 0 | 0 | 0 | `build` → unreviewed |
 | [Subnautica](#subnautica) | 1 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Subnautica: Below Zero](#subnautica-below-zero) | 1 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Super Smash Bros. Ultimate](#super-smash-bros-ultimate) | 11 | 0 | 0 | 1 | 0 | `game` |
@@ -449,6 +451,17 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 - **1.3.0 `main`** `94ceae32…`
   - host [hle_fpslock.c:27](../../dm/host/hle_fpslock.c#L27): engine frame limit set to fps_target: Unity targetFrameRate
+
+### Pokémon Pokopia
+
+[Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md), `0400A3A01EE4C000`, [patches.py](../../dm/games/0400A3A01EE4C000/patches.py).
+
+- **`build` → unreviewed**, memory, unreviewed, judgement: KTGL memory pool sizes at boot: 3500 / 500 / 400 MB → 3000 / 250 / 200 MB. A pool in the residency set is wired whole; a general answer would wire only the used part of a pool, which the host cannot do while a pool is one zero-copy buffer
+
+- **1.0.4 `main`** `816c5358…` ([patches.py:6](../../dm/games/0400A3A01EE4C000/patches.py#L6))
+  - cut `+0x103f68c`: 3500 MB render and texture pool (flags 0xa2) → 3000 MB
+  - cut `+0x103f80c`: 500 MB pool (flags 0x22) → 250 MB
+  - cut `+0x103f828`: 400 MB pool (flags 0x22) → 200 MB
 
 ### Subnautica
 

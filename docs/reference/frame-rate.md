@@ -346,6 +346,14 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Fix:** main-thread registration calls the same `qos_apply` used by worker threads, before recording the actual class, and logs the resulting class. With diagnostics enabled, `DM_NVN_CPUPROF=1` measures inclusive CPU/wall time in pass begin/end, pipeline lookup, argument encoding, texture lookup, draw, geometry, and submission indexing. These nested phase times overlap. The thread regression confirms `0x21`; on-device performance remains to be validated.
 - **Found on:** [NieR:Automata US 1.0.3](../../dm/games/010056B015FE8000/README.md), where the slow gameplay captures show 159–160 million host translation instructions per frame, considerable scheduling delay, nominal thermal state, and ample memory headroom.
 
+### Submissions past the command allocator cap wait for the GPU
+
+- **Symptom:** a game that submits many times a frame runs at the GPU's pace although its CPU work is small: `translation detail` shows a submit's wall clock near the GPU time and far above its CPU time (20.8 against 1.5 ms), `allocator pools 8`, and `GPU waits so far` grows by hundreds per window. The wait ledger (`DM_NVN_WAITS=1`) has `allocator` blocked about twice a frame. Frame time follows GPU time up, 24 ms at 21 ms of GPU, with no pipeline or upload work, and any spike in the GPU's time passes straight to the game.
+- **Cause:** `mtl_sub_begin` takes a command allocator the GPU has finished with, makes a new one if none is free, and waits for the oldest only at `ALLOC_MAX`. The cap of 8 is under one frame of 11 submissions, so the ninth waited for the GPU every frame, on the render thread, which the Switch's submit never does.
+- **Fix:** `ALLOC_MAX` 48; allocators are still made only when none is free (20 at most here), and how far a game runs ahead stays bounded by its wait for the swapchain texture. The visibility ring has one buffer per allocator (64 KB each). The allocator wait now wakes on the GPU's signal like the game's own waits, not on the feedback handler. The ledger's `[waits]` line also gives each site's longest wait and the handlers' worst lateness and run times.
+- **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md) on an iPhone with an A20 Pro: the allocator wait gone (`GPU waits so far 0`), submit p50 22 → 2.2 ms, frames over 25 ms 373 in 106 s → 40 in 90 s, 50 → 59 fps. These are separate play sessions along no fixed route. No other game has been run on it.
+- **Note:** the raised cap is what the numbers show; whether the signal wake matters on its own was not measured apart from it (handlers were at most 1.6 ms late in play).
+
 ### Time-constraint computation declared below the thread's peaks
 
 - **Symptom:** stalls of 30–60 ms about once a second, at 30 fps and at 60 (99th percentile 63–127 ms); the main thread waits 20–34 ms for the render thread once a second.

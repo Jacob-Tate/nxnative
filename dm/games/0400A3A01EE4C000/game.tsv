@@ -1,0 +1,38 @@
+# Pokémon Pokopia (Switch 2, update v327680 = 1.0.4). In bring-up
+# Koei Tecmo's Motor / KTGL engine ("KTGL For Ounce"), SDK 20.5.25, NVN2 (Ampere shaders); modules main + subsdk0 (movie) + sdk.
+# Packed from a dump folder (base/, updates/<version>/) with scripts/pack_dump.py. Shaders: GLSLC outputs in G2S containers in the IDRK entries of RDB .fdata files, as ROMANCE OF THE THREE KINGDOMS 8 REMAKE's.
+
+# ---- Identity ----
+title_id	0400A3A01EE4C000
+program_id	0400A3A01EE4C000
+
+# ---- App ----
+name	Pokémon Pokopia
+ipa	PokemonPokopia.ipa
+app_category	public.app-category.simulation-games
+pad_layout	full
+
+# ---- Versions ----
+build	v327680	1.0.4	main=816c5358e8178d802fcec4a7ce5a741a	subsdk0=9646a69cb1024ba919fddaa4265e6bc5	sdk=cc7da00d672399efe7958790d17fae39
+package	v327680
+shader_versions	v327680
+
+# ---- Files ----
+modules	main subsdk0 sdk
+romfs_marker	motor_asset_re/KIDS_PLATFORM_OUNCE/root.rdb
+zip_store	.fdata:.file:.rdb:.webm:.metallib:.BIN
+
+# ---- Memory ----
+# The Switch 2 leaves games 9 GB of its 12 GB (Donkey Kong Bananza's figure, not measured here). The NPDM declares no system resource (META +0x14 = 0).
+# 256 MB in front + 256 MB alias region + 256 MB stack region + 9 GB heap region
+mem_reserve	0x270000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0x240000000
+sys_resource	0x0
+# The rewritten modules take 82 MB, more than the default 64 MB of used memory, which SetHeapSize checks the request against
+mem_used	0x6000000
+
+# ---- Shader split (shader_split.py) ----
+shader_groups	/motor_asset_re/=rdb
+shader_note	Pokémon Pokopia shaders

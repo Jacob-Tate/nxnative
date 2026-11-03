@@ -4,6 +4,13 @@ SDK calls and system services the host answers (`dm/host/hle_*.c`). Each entry: 
 
 ## Service connections
 
+### GameShare guest displays at boot
+
+- **Symptom:** a crash on a null mutex (`InternalCriticalSectionImplByHorizon::IsLockedByCurrentThread`) under `nn::vi2::sdk::Initialize`, called from `nn::streamplay::CreateIndividualDisplays`.
+- **Cause:** a game may make its GameShare guest display at boot with no session. The SDK's function goes on to `vi2`, which the host does not serve.
+- **Fix:** `hle_misc.c` answers: no display is made, as there is no guest, and `GetNativeWindowHandle` gives a host object nothing presents to.
+- **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md): `main+0x10428f8`.
+
 ### SDK calls that open a system service through sm
 
 - **Symptom:** `sm::Initialize` aborts right after `ConnectToNamedPort` (SVC 0x1F) and `SendSyncRequest` (0x21); abort inside `nn::sm::Initialize`, the log showing `SVC 0x1f` (ConnectToNamedPort, port name `sm:`) and `SVC 0x21` answered by placeholders, then an `nn::diag` abort; abort with no message at start-up in a service call the host has no hook for (`Break` from `sdk+…` with an `nn::diag` backtrace).

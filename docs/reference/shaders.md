@@ -138,6 +138,20 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) (Koei Tecmo's KTGL): 40,726 shaders (37,043 pixel, 3,440 vertex, 241 compute, 2 geometry), Mario's texture handle layout (`0x20 + 8 × slot`). [ROMANCE OF THE THREE KINGDOMS 8 REMAKE](../../dm/games/0100C2A01A730000/README.md)'s newer KTGL keeps them (`_S2G5000` / `6000` / `7000`, and `_DOK0000`) in `.fdata` files whose IDRK entries are LZ4 or zlib in chunks of another form ([01](../agents/01-extract.md)): 59,214 outputs there and 149 in `main`, all of them built.
 - **Note:** the older KTGL of Three Houses packs the same G2S containers differently ([SPKG packages in KTGL LINKDATA](#spkg-packages-in-ktgl-linkdata)).
 
+### GLSLC outputs for NVN2
+
+- **Symptom:** a Switch 2 game's GLSLC outputs are dropped by the split, with no error: their length at +0x44 reads 0.
+- **Cause:** the output header of an NVN2 GLSLC (output version 0x22.0x15) has the older layout's fields 0x18 further on (the output's length at +0x5c, the section count at +0x64) and longer section headers (+0xa8 + 0x98 i, their fields as before). The control section is NVN2's.
+- **Fix:** `glslc_nvn2_sections` in `shader_split.py` reads them, for outputs whose +0x44 is 0. The general scan for control sections outside any output now knows their length too, which stopped a false `[RED] … no code area` line for each.
+- **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md): all 160 outputs in `main` and all those in its G2S containers.
+
+### LD and LI LINKDATA pairs
+
+- **Symptom:** `[RED] shader … is not in the shader map` for shaders whose control section hash (+0x20) is in no file, even in every inflated RDB entry.
+- **Cause:** `LD_<name>.BIN` beside `LI_<name>.IDX` is LINKDATA under another name: the same 32-byte index as Three Houses' `DATA0.bin` and `DATA1.bin`. The split scanned the file as raw bytes, which found only its stored entries. Its compressed entries also use chunks of 0x20000 and 0x80000 bytes, which `kt_gz` refused.
+- **Fix:** `linkdata_index` pairs both namings, and `kt_gz` takes any power of two from 0x10000. No game's name is involved.
+- **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md): `3SPK1000` packages, 492 shaders against 26, among them the post effects every frame draws.
+
 ### SPKG packages in KTGL LINKDATA
 
 - **How it is stored:** shader packages (`SPKG`: `patch*/nx/shader/*.spkg` and 132 entries of `DATA1.bin`) of G2S containers as in the [RDB entry](#g2s-containers-in-ktgl-rdb-archives), one `_SPK4100` package without G2S (the post effects, `DATA1.bin` entry 549), and map and model archives carrying packages of their own.
@@ -805,6 +819,7 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
   - Geometry stage: OUT (0x124, emit / cut; none is OUTFINAL) and ISBERD (the vertex index passes through, as on Maxwell). A geometry shader that ends through an exit stub sets it up with LEPC and 0x357, and the stub runs OUTFINAL and 0x957 before its EXIT; per thread there is nothing to finish, so LEPC writes its own address and 0x357 / 0x957 do nothing.
   - NVN2 compute lays out `c[0]` per shader, from the control section: from 0x10 its push constants (+0xa9, in words), then its uniform buffer entries (+0xb1 of them) and storage buffer entries (+0xb2), 0x10 bytes each, then its texture handles (+0xb3) and image handles, 8 bytes each; the u16 at +0xba is the total (checked on all 205 of Donkey Kong Bananza's compute shaders). `dmsh_build.py` passes the counts (job `nvn2_cs`) and the frontend maps each range onto the tables the host already fills (`AMapC0`): push constants to `c[24]` (`DMSH_PUSH_BANK`), uniform entries to the compute uniform table, storage entries to the compute storage table, handles to `c[2]`. Graphics stages keep NVN's fixed tables. The push constants themselves come from `nvnCommandBufferPushGraphicsConstants` / `PushComputeConstants` (`OP_PUSH_CONST`, a `DMSH_PUSH_SIZE` block a stage group).
   - A storage address added from two constant buffer values (a `c[0]` entry plus an offset from `c[1]`, by UIMAD.WIDE) put the `c[1]` term second, and `GlobalToStorage` took the second operand as the base; it now prefers the driver segment's operand when only one is from it (Maxwell output unchanged, 28,669 shaders).
+  - Decoded for [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md): F2FP.MERGE_C (bit 78: b to the low half, C's low half, or its high half with .H1 at 72, to the high one; a unused; Mesa NAK `OpF2FP`), F2I from a half (source size 84..86 = 1, the half by 60..62, as F2F), and ATOMS (0x38c, 0x98c: as `OpAtom` for shared memory). MEMBAR, ERRBAR, BREV and the shared memory stride came from [PR #900](https://github.com/seedds/nxnative/pull/900).
 - **Found on:** [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md#shaders): 22,751 of 22,822 shaders translate; its menu renders, and its gameplay, including agl's upscaler network (`agl_ndsr.pck`, 24 compute shaders with HMMA).
 - **Resolved:** 0x593 is SUATOM, an image atomic through a handle (`ASuatom`, `InstEmitAmpereMem.cs`): SUST's handle (40..59) and dimension (61..64), ATOMG's operation (87..91), size (73..76) and predicate result (81..83, PT here). Its two shaders, agl's `agl_technique_pfx` compute shaders, take an append counter with it (SUATOM.ADD.U32 on a 1D image, the old value shuffled to the warp, then their SUST), and now translate: all 22,852 of the package's shaders do. Neither has been met in play so far, so the picture is not checked; `test_dmsh_ampere_mem.py` translates the encoding. A handle in another bank or a predicate result is refused.
 - **Open:** loads and stores through addresses read from memory, which had no storage buffer to become, go through the memory pools now ([Global memory at an address loaded from memory](#global-memory-at-an-address-loaded-from-memory)).
@@ -828,6 +843,21 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** the else is skipped when a goto would have to jump into it (`HasGotoInto`, the goto's own label included). Only shaders that got a forced loop change.
 - **Found on:** [Splatoon Raiders](../../dm/games/0400380020056000/README.md): 26 such loops around the whole program in its uber shaders: the mid-size shader went from 176 loops to 0, the largest from 364 to 5, and 8 workers stalled for 5 h 40 before that. Three test shaders then compile in 89 s.
 - **Check:** `DMSH_TEST_XLATE=<translator> python3 dm/gfx/tests/test_dmsh_control_flow.py`.
+
+### Ampere half-pair second source in forms 2, 3 and 7
+
+- **Symptom:** `Caused GPU Hang Error (kIOGPUCommandBufferCallbackErrorHang)`, after about 150 ms of GPU time and at a frame that moves between runs, then every submission ignored and a frozen or black picture. Metal's API and shader validation report nothing.
+- **Cause:** a two-source ALU instruction keeps its second source in the C slot in forms 2, 3 and 7 (`ASecond`). The half-pair emitters took B, the 64 slot, which those forms leave unused. `HADD2 R6, R6, 0x38003800` added R0's bits instead of 0.5, so a loop on a half-float counter never reached its limit.
+- **Fix:** `AHalfSecond`, used by HADD2, HMUL2, HSETP2, HSET2 and HMNMX2. This changes those instructions on every Ampere game; HFMA2 has three sources and is unchanged.
+- **Check:** to find such a shader, take the pixel and compute shaders between two `fence_sync` lines of the failing submission in a `DM_NVN_PASSDUMP`, and skip each with `DM_NVN_SKIP_FS`. Skipping the guilty one takes the errors to 0.
+- **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md): the bilateral blur `85446a6753300fc8`.
+
+### Ampere 1D texel fetches of buffer textures
+
+- **Symptom:** `[RED] texture type mismatch: shader … declares slot … as Metal type 0, texture ID … is type 9 … a buffer texture: the slot reads 0 (dummy)`, on a Switch 2 game.
+- **Cause:** Maxwell's and Ampere's TLD fetch a 1D texture and a texture buffer alike, and the descriptor decides. The Maxwell emitter wraps such a fetch into rows ([Buffer textures read by 1D integer fetches](rendering.md#buffer-textures-read-by-1d-integer-fetches-row-wrap)); the Ampere emitter read a plain `texture1d`.
+- **Fix:** `ATex` does as Maxwell's TLD does when no type answer says otherwise: `(x & 0x3FFF, x >> 14)`, and reports the slot as `fetch1d`.
+- **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md): compute shader `70ab27e185dea4ab` walks a list held in three buffer textures, and with zeros the GPU hung.
 
 ### Ampere jump tables read past their end
 

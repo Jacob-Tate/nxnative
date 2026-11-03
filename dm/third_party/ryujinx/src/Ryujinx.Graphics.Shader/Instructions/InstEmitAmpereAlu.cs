@@ -63,6 +63,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             alu(0x0bf, InstName.Popc, APopc, uniform: true);
             alu(0x100, InstName.Flo, AFlo);
             alu(0x0bd, InstName.Flo, AFlo, uniform: true);
+            alu(0x101, InstName.Bfe, ABrev);
+            alu(0x0be, InstName.Bfe, ABrev, uniform: true);
             alu(0x01a, InstName.Bfe, ASgxt);
             alu(0x09a, InstName.Bfe, ASgxt, uniform: true);
 
@@ -238,9 +240,11 @@ namespace Ryujinx.Graphics.Shader.Instructions
             AmpereOp x = new(context.CurrOp);
             ASrc s = AOne(context, x);
 
-            if (x.Bits(84, 86) != 2)
+            int srcSize = x.Bits(84, 86);
+
+            if (srcSize is not (1 or 2))
             {
-                throw AFail(context, "F2I from a float that is not 32-bit");
+                throw AFail(context, $"F2I from a {8 << srcSize}-bit float");
             }
 
             int size = x.Bits(75, 77);
@@ -253,7 +257,15 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             IDstFmt dst = (IDstFmt)((signed ? 4 : 0) | System.Math.Max(size, 1));
 
-            EmitF2I(context, DstFmt.F32, dst, (RoundMode2)x.Bits(78, 80), AGet(context, s), x.Rd, s.Abs, s.Neg);
+            Operand src = AGet(context, s);
+
+            // A half source is one half of its register, chosen by 60..62 as in F2F; EmitF2I converts it as a single, which holds every half exactly
+            if (srcSize == 1)
+            {
+                src = x.Bits(60, 62) is 1 or 3 ? context.UnpackHalf2x16High(src) : context.UnpackHalf2x16Low(src);
+            }
+
+            EmitF2I(context, DstFmt.F32, dst, (RoundMode2)x.Bits(78, 80), src, x.Rd, s.Abs, s.Neg);
 
             if (size == 0 && x.Rd != RegisterConsts.RegisterZeroIndex)
             {
@@ -352,12 +364,24 @@ namespace Ryujinx.Graphics.Shader.Instructions
         {
             AmpereOp x = new(context.CurrOp);
 
-            if (x.Bit(78) || x.Bit(72))
+            (ASrc a, ASrc b) = ASecond(context, x, abs: false);
+
+            // F2FP.F16.F32.MERGE_C Rd, -, b, c (bit 78): a is unused, b goes to the low half, and c's low half (its high half with .H1, bit 72) to the high one (Mesa NAK sm70_encode.rs OpF2FP)
+            if (x.Bit(78))
             {
-                throw AFail(context, "F2FP.MERGE_C");
+                Operand c = AGet(context, new ASrc(AKind.Reg, x.Bits(64, 72)));
+                Operand high = x.Bit(72) ? context.ShiftRightU32(c, Const(16)) : context.BitwiseAnd(c, Const(0xffff));
+                Operand low = context.PackHalf2x16(AFloat(context, b), ConstF(0));
+
+                ASet(context, x, context.BitwiseOr(low, context.ShiftLeft(high, Const(16))), AUniform(context));
+
+                return;
             }
 
-            (ASrc a, ASrc b) = ASecond(context, x, abs: false);
+            if (x.Bit(72))
+            {
+                throw AFail(context, "F2FP.H1 without MERGE_C");
+            }
 
             ASet(context, x, context.PackHalf2x16(AFloat(context, b), AFloat(context, a)), AUniform(context));
         }
@@ -406,6 +430,15 @@ namespace Ryujinx.Graphics.Shader.Instructions
             return bIn32 ? (ha, h32, h64) : (ha, h64, h32);
         }
 
+        // A and the second source of a two-source half-pair op: as ASecond, C in forms 2, 3 and 7. HADD2 R6, R6, 0x38003800 (form 2) has its immediate there and R0 in the unused 64 slot; taking B,
+        // Pokémon Pokopia's bilateral blur (85446a6753300fc8) added R0's bits to its half-float loop counter instead of 0.5, never ended the loop, and hung the GPU
+        private static (Operand[] A, Operand[] B) AHalfSecond(EmitterContext context, AmpereOp x)
+        {
+            (Operand[] a, Operand[] b, Operand[] c) = AHalfSrcs(context, x);
+
+            return (a, x.Form is 1 or 4 or 5 or 6 ? b : c);
+        }
+
         // The result: two halves packed, or with .F32 (78) the low lane as one float. HFMA2 / HMUL2 (sm_86): .RELU (79) clamps at zero; .BF16_V2 (85)
         // is not handled.
         private static void AHalfResult(EmitterContext context, AmpereOp x, Operand lo, Operand hi)
@@ -435,7 +468,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
         public static void AHadd2(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
-            (Operand[] a, Operand[] b, _) = AHalfSrcs(context, x);
+            (Operand[] a, Operand[] b) = AHalfSecond(context, x);
 
             AHalfResult(context, x, context.FPAdd(a[0], b[0]), context.FPAdd(a[1], b[1]));
         }
@@ -443,7 +476,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
         public static void AHmul2(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
-            (Operand[] a, Operand[] b, _) = AHalfSrcs(context, x);
+            (Operand[] a, Operand[] b) = AHalfSecond(context, x);
 
             AHalfResult(context, x, context.FPMultiply(a[0], b[0]), context.FPMultiply(a[1], b[1]));
         }
@@ -1043,6 +1076,14 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             ASet(context, x, context.BitCount(src), u);
+        }
+
+        // BREV Rd, b: the bits of b in reverse order (Mesa NAK OpBrev; UBREV on the uniform datapath)
+        public static void ABrev(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+            bool u = AUniform(context);
+            ASet(context, x, context.BitfieldReverse(AGet(context, AOne(context, x, u, neg: false, abs: false))), u);
         }
 
         // FLO Rd, b: the index of the most significant set bit (signed 73: of the first bit unlike the sign), .SH (74) as a shift amount; 63 negates the input

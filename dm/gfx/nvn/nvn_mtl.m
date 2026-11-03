@@ -92,7 +92,7 @@ static id<MTL4CommandQueue> g_q4;
 static int g_classic_ok, g_classic;   // mtl_device_classic was asked / the device has no Metal 4 and only the classic part started (mtl_init)
 static dispatch_queue_t g_feedback_q;
 static _Atomic uint32_t g_present_qos;
-#define ALLOC_MAX 8
+#define ALLOC_MAX 48   // Allocators are made only when none is free, so a game pays for what it has in flight: Pokémon Pokopia submits 11 times a frame, and 8 made its render thread wait for the GPU on every frame
 static id<MTL4CommandAllocator> g_alloc4[ALLOC_MAX]; static int g_alloc_n, g_alloc_cur;   // Command allocator pool of the main submission: at start pick one the GPU has finished with, create a new one if there is none (wait only at the cap)
 static id<MTL4CommandAllocator> g_up_alloc4[3];
 static id<MTL4CommandAllocator> g_present_alloc4[3];
@@ -173,12 +173,13 @@ static pthread_mutex_t g_res_mu = PTHREAD_MUTEX_INITIALIZER;   // Dedicated lock
 enum { WS_SYNC, WS_SYNC_NEWEST, WS_SYNC_POLL, WS_ACQ, WS_FINISH, WS_ALLOC, WS_VIS, WS_PG, WS_MDI, WS_READTEX, WS_T2T, WS_DIAG, WS_SNAP, WS_UPZERO, WS_UPALLOC, WS_DRAIN, WS_UBC, WS_OLDQ, WS_N };
 static const char *const ws_name[WS_N] = {"SyncWait (game, older fence)", "SyncWait (game, newest fence)", "SyncWait polls", "SyncWait on an acquire sync", "QueueFinish", "allocator", "occlusion ring", "PASSGPU ring",
     "indirect-count multi-draw", "texture readback", "texture copy t2t", "diagnostics", "snapshot ring", "upload batches", "upload slot", "encode thread drain", "uniform copy worker", "old-queue command buffer"};
-static _Atomic uint64_t g_ws_n[WS_N], g_ws_blk[WS_N], g_ws_ns[WS_N];
+static _Atomic uint64_t g_ws_n[WS_N], g_ws_blk[WS_N], g_ws_ns[WS_N], g_ws_max[WS_N];
+static void ws_max(_Atomic uint64_t *m, uint64_t v) { uint64_t o = atomic_load_explicit(m, memory_order_relaxed); while (v > o && !atomic_compare_exchange_weak_explicit(m, &o, v, memory_order_relaxed, memory_order_relaxed)) {} }
 static int ws_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_WAITS"); v = e && atoi(e) > 0; } return v; }
 static inline uint64_t ws_t0(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 static inline void ws_put(int site, uint64_t t0, int blocked) {
     atomic_fetch_add_explicit(&g_ws_n[site], 1, memory_order_relaxed);
-    if (blocked) { atomic_fetch_add_explicit(&g_ws_blk[site], 1, memory_order_relaxed); atomic_fetch_add_explicit(&g_ws_ns[site], ws_t0() - t0, memory_order_relaxed); }
+    if (blocked) { uint64_t d = ws_t0() - t0; atomic_fetch_add_explicit(&g_ws_blk[site], 1, memory_order_relaxed); atomic_fetch_add_explicit(&g_ws_ns[site], d, memory_order_relaxed); ws_max(&g_ws_max[site], d); }
 }
 // For the game's waits: when each fence's command buffer ended on the GPU and when its feedback handler ran (CACurrentMediaTime), so a wait that blocked tells its wake-up delay
 static struct { _Atomic uint64_t fence, wfence; double gpu_end, fb, wake; _Atomic int done; } g_fend[64];
@@ -196,14 +197,18 @@ static void ws_fb(uint64_t fence, double gpu_end) {   // the fence's feedback ha
     ws_wake_pair(k);
 }
 static _Atomic uint64_t g_ws_post[5];
+// The longest in this report's window: how long after the GPU's end a submission's feedback handler started, and how long its completion writes and its deferred releases ran
+static _Atomic uint64_t g_fb_late_max, g_fb_post_max, g_fb_drain_max;
 static void ws_report(uint64_t frame, uint64_t frames) {
     char line[2048]; size_t o = 0;
     { uint64_t e = atomic_exchange(&g_ws_post[1], 0), sp = atomic_exchange(&g_ws_post[2], 0), ts = atomic_exchange(&g_ws_post[3], 0), oc = atomic_exchange(&g_ws_post[4], 0);
       if (e + sp + ts + oc) o += snprintf(line + o, sizeof line - o, " CPU-side writes at GPU end: events %.2f, samples-passed reports %.2f, timestamp reports %.2f, other counter reports %.2f;", (double)e / frames, (double)sp / frames, (double)ts / frames, (double)oc / frames); }
     uint64_t wn = atomic_exchange(&g_ws_wake_n, 0), wns = atomic_exchange(&g_ws_wake_ns, 0), fns = atomic_exchange(&g_ws_fb_ns, 0);
     if (wn) o += snprintf(line + o, sizeof line - o, " newest-fence SyncWait wakes %.3f ms after the GPU end (feedback handler at %.3f ms);", wns / 1e6 / wn, fns / 1e6 / wn);
-    for (int i = 0; i < WS_N; i++) { uint64_t n = atomic_exchange(&g_ws_n[i], 0), b = atomic_exchange(&g_ws_blk[i], 0), ns = atomic_exchange(&g_ws_ns[i], 0);
-        if (n && o < sizeof line - 160) o += snprintf(line + o, sizeof line - o, " %s %.2f/frame (blocked %.2f, %.3f ms);", ws_name[i], (double)n / frames, (double)b / frames, ns / 1e6 / frames); }
+    { uint64_t l = atomic_exchange(&g_fb_late_max, 0), p = atomic_exchange(&g_fb_post_max, 0), d = atomic_exchange(&g_fb_drain_max, 0);
+      if (l + p + d) o += snprintf(line + o, sizeof line - o, " feedback handler at most %.1f ms after the GPU end, completion writes %.1f ms, deferred releases %.1f ms;", l / 1e6, p / 1e6, d / 1e6); }
+    for (int i = 0; i < WS_N; i++) { uint64_t n = atomic_exchange(&g_ws_n[i], 0), b = atomic_exchange(&g_ws_blk[i], 0), ns = atomic_exchange(&g_ws_ns[i], 0), mx = atomic_exchange(&g_ws_max[i], 0);
+        if (n && o < sizeof line - 160) o += snprintf(line + o, sizeof line - o, " %s %.2f/frame (blocked %.2f, %.3f ms, longest %.1f ms);", ws_name[i], (double)n / frames, (double)b / frames, ns / 1e6 / frames, mx / 1e6); }
     MLOG("[waits] up to frame %llu, per frame:%s", (unsigned long long)frame, o ? line : " none");
 }
 #include "nvn_rec.h"   // deferred encoding (DM_NVN_ENC_THREAD)
@@ -1611,11 +1616,13 @@ uint64_t mtl_sub_commit(void) {
     pthread_mutex_unlock(&g_post_mu);
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> cb) {
         gpu_tag_done(gpu_f, cb.GPUStartTime, cb.GPUEndTime);
-        if (ws_on()) ws_fb(fence, cb.GPUEndTime);
+        uint64_t fb0 = 0; if (ws_on()) { ws_fb(fence, cb.GPUEndTime); ws_max(&g_fb_late_max, (uint64_t)(fmax(0, CACurrentMediaTime() - cb.GPUEndTime) * 1e9)); fb0 = ws_t0(); }
         uint64_t c0 = 0, c1 = 0; if (seg_ts()) { c0 = gpu_s_guest_ns(cb.GPUStartTime); c1 = gpu_s_guest_ns(cb.GPUEndTime); }
         if (cb.error) { atomic_store(&g_last_commit_error, 1); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("[RED] command buffer error details fence=%llu: %s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("[RED] state of the failed submission fence=%llu: %s", (unsigned long long)fence, cctx.UTF8String); MLOG("[RED] command buffer execution error: %s", cb.error.localizedDescription.UTF8String); }
         post_complete(fence, c0, c1);
+        uint64_t fb1 = fb0 ? ws_t0() : 0;
         defer_drain();
+        if (fb0) { ws_max(&g_fb_post_max, fb1 - fb0); ws_max(&g_fb_drain_max, ws_t0() - fb1); }
     }];
     void arena_commit(uint64_t fence); arena_commit(fence);
     res_commit();
@@ -1644,11 +1651,13 @@ static void post_early(uint64_t fence) {
 static int mtl_wait_at(uint64_t fence, uint64_t timeout_ns, int site) {
     if (g_done >= fence) { if (ws_on()) ws_put(site, 0, 0); return 1; }
     uint64_t w0 = ws_t0();
-    if ((site == WS_SYNC || site == WS_SYNC_NEWEST || site == WS_ACQ) && fast_wake() && g_ev && fence <= g_fence) {   // the game's own wait: wake on the GPU's signal (rec_signal(g_ev, fence) after each submission)
+    // The game's own wait and the allocator's: wake on the GPU's signal (rec_signal(g_ev, fence) after each submission). A feedback handler's completion writes can hold up the next handlers (50.7 ms once
+    // in Pokémon Pokopia, before play; at most 1.6 ms in play), and the submit thread need not wait for them to reuse an allocator the GPU has finished with
+    if ((site == WS_SYNC || site == WS_SYNC_NEWEST || site == WS_ACQ || site == WS_ALLOC) && fast_wake() && g_ev && fence <= g_fence) {
         uint64_t ms = timeout_ns / 1000000ull; if (ms > 3600000ull) ms = 3600000ull;
         if ([g_ev waitUntilSignaledValue:fence timeoutMS:ms]) post_early(fence);
         int ok = g_done >= fence;
-        if (ws_on()) { ws_put(site, w0, 1); ws_wake(fence); }
+        if (ws_on()) { ws_put(site, w0, 1); if (site != WS_ALLOC) ws_wake(fence); }
         if (ok || timeout_ns < 1000000ull) return ok;
         // The event and feedback waits share a finite budget; a timeout must not buy another full wait.
         if (timeout_ns != UINT64_MAX) {

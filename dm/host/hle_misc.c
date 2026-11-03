@@ -186,7 +186,10 @@ HLE_FORCE("_ZN2nn10streamplay21GetRequiredMemorySizeENS0_14StreamPlayTypeENS0_13
 HLE_FORCE("_ZN2nn10streamplay10InitializeENS0_14StreamPlayTypeENS0_13StreamingModeEPvm", "streamplay (stpl:u): ready, no session", Result, h_stpl_Init, int type, int mode, void *work, size_t size) {
     (void)type; (void)mode; (void)work; (void)size; return RES_OK; }
 HLE_FORCE("_ZN2nn10streamplay8FinalizeEv", "streamplay (stpl:u): nothing to release", void, h_stpl_Fini, void) {}
-// The connection state change event: a host-owned SystemEvent, bound on first use and never signaled (the state never changes)
+// Pokémon Pokopia makes its GameShare guest display at boot, with no session (main+0x10428f8): there is no guest to show it, so no display is made and its window handle is a host object nothing presents to
+HLE_FORCE("_ZN2nn10streamplay24CreateIndividualDisplaysEi", "guest displays: none (no guest)", void, h_stpl_Displays, int n) { (void)n; }
+static uint8_t g_stpl_window[0x100];
+HLE_FORCE("_ZN2nn10streamplay21GetNativeWindowHandleENS0_7GuestIdE", "guest window handle: a host object nothing presents to", void *, h_stpl_Window, int guest) { (void)guest; return g_stpl_window; }
 static uint8_t g_stpl_ev[0x80] __attribute__((aligned(16)));
 HLE_FORCE("_ZN2nn10streamplay30GetConnectionStateChangedEventEv", "streamplay connection state event: bound, never signaled", void *, h_stpl_ConnEv, void) {
     hle_bind_system_event(g_stpl_ev, 0); return g_stpl_ev; }

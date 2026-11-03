@@ -364,6 +364,13 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 - **Check:** for Breath of the Wild's whole scene, probe where the setup heap is cut (`main+0x155a520` with `!x21`, the resource heap) and the end of the setup (`main+0x155a5f4` with `!x2`, the frame heap), with `DM_PROBE_HEAP=28,38,40,e0,f8 DM_PROBE_HEAPFRAME=1d4f950 DM_PROBE_HEAPWORDS=1` ([05](../agents/05-debugging.md#probes-without-a-debugger-dm_probe)). A model fits any placement when entry + 0x1008 covers the resource heap's header and object (0x310), the file, the frame heap's block header and its peak use, plus 0xff8 of pad.
 - **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md), [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md#memory) (buffer bindings; the game note records the failed allocation, measured sizes and validation), [Super Mario Odyssey](../../dm/games/0100000000010000/README.md#services) (state and single texture binds; the note has the heap's measurements).
 
+### A wired pool past the GPU working set panics the kernel
+
+- **Symptom:** the Mac restarts while a game runs. `/Library/Logs/DiagnosticReports/panic-full-*.panic` names `dmhost` as the panicked task: `Kernel data abort`, `far 0xc8`, `x0 = 0xe00002bd` (kIOReturnNoMemory), `IOGPUFamily` and `AGXG13G` in the backtrace. The host's log just stops, with no crash report. Before it, the memory line's `GPU allocated` is past `recommendedMaxWorkingSetSize`.
+- **Cause:** a pool in the residency set is wired whole, used or not (`pool_res`). When wiring fails, Apple's driver dereferences null on its error path instead of returning the error. So this is a platform bug, reached by a game whose pools do not fit: 5461 MB of working set on an 8 GB M1, and 6.29 GB of the machine's memory wired at the panic.
+- **Fix:** none in the host: a pool is one zero-copy buffer, and resources in it need contiguous GPU addresses. A workaround per game: lower the pool sizes in its `patches.py`, to what `DM_NVN_POOLHW=1` shows it uses. Open: wiring only a pool's used part. While testing near the limit, end the host from outside before wired memory reaches 6.1 GB on such a machine.
+- **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md#memory): 4.96 GB of pools, two panics in the first area.
+
 ### Unity's GPU pool block allocation spins at size 0
 
 - **Symptom:** the frames stop at the first loading screen, a graphics worker at 100% CPU (17 s in, `UnityGfxDeviceWorker` running, the main thread waiting on a condition variable, no red line).

@@ -28,6 +28,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             x(0x98e, InstName.Red, ARed, N, writesRd: false);
             x(0x9a8, InstName.Atom, AAtomg, N);
             x(0x3a8, InstName.Atom, AAtomg, N);
+            x(0x38c, InstName.Atoms, AAtoms, N);
+            x(0x98c, InstName.Atoms, AAtoms, N);
             x(AmpereOpcodes.Ldl, InstName.Ldl, ALdLocalShared, N);
             x(0x984, InstName.Lds, ALdLocalShared, N);
             x(0x387, InstName.Stl, AStLocalShared, N, writesRd: false);
@@ -47,6 +49,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             x(0xb9d, InstName.Sust, ASurface, N, writesRd: false);
             x(0x593, InstName.Suatom, ASuatom, N);
             x(0xb1d, InstName.Bar, ABar, N, writesRd: false);
+            x(0x992, InstName.Membar, AMembar, N, writesRd: false);
+            x(0x9ab, InstName.Membar, AErrbar, N, writesRd: false);
         }
 
         // ---- attributes ----
@@ -310,10 +314,17 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
         // ---- local and shared memory ----
 
-        // The 32-bit address of a local / shared access: Ra plus the uniform register (at urLo in the uniform form, bit 91)
-        private static Operand ALocalAddress(EmitterContext context, AmpereOp x, int urLo)
+        // The 32-bit address of a local / shared access: Ra plus the uniform register (at urLo in the uniform form, bit 91). A shared access scales Ra by
+        // the stride at 78..80 (X1, X4, X8, X16; NAK's OffsetStride): Mario Kart World's froxel compute shaders index vec4 slots as LDS.128 [Ra.X16 + imm]
+        private static Operand ALocalAddress(EmitterContext context, AmpereOp x, int urLo, bool shared)
         {
             Operand addr = Register(x.Ra, RegisterType.Gpr);
+            int stride = shared ? x.Bits(78, 80) : 0;
+
+            if (stride != 0 && x.Ra != RegisterConsts.RegisterZeroIndex)
+            {
+                addr = context.ShiftLeft(addr, Const(stride + 1));
+            }
 
             if (x.Bit(91) && x.Bits(urLo, urLo + 6) != RegisterConsts.UniformZeroIndex)
             {
@@ -323,13 +334,24 @@ namespace Ryujinx.Graphics.Shader.Instructions
             return addr;
         }
 
+        // ATOMS Rd, [Ra + UR + offset], Rb (Mesa NAK sm70_encode.rs OpAtom, MemSpace::Shared): UR at 64, size 73..76, offset 40..64, operation 87..91. Maxwell's Atoms addresses words
+        public static void AAtoms(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+            Operand addr = context.IAdd(ALocalAddress(context, x, 64, shared: true), Const((int)x.SignedField(40, 64)));
+            Operand id = Const(context.ResourceManager.SharedMemoryId);
+            Operand res = EmitAtomicOp(context, StorageKind.SharedMemory, (AtomOp)x.Bits(87, 91), (AtomSize)x.Bits(73, 76), id, context.ShiftRightU32(addr, Const(2)), Register(x.Rb, RegisterType.Gpr));
+
+            ASet(context, x, res);
+        }
+
         // LDL / LDS Rd, [Ra + UR + offset]: UR at 32, size 73..76, offset 40..64
         public static void ALdLocalShared(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
             StorageKind kind = x.Opcode == AmpereOpcodes.Ldl ? StorageKind.LocalMemory : StorageKind.SharedMemory;
 
-            EmitLoad(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 32), x.Rd, (int)x.SignedField(40, 64));
+            EmitLoad(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 32, kind == StorageKind.SharedMemory), x.Rd, (int)x.SignedField(40, 64));
         }
 
         // STL / STS [Ra + UR + offset], Rb: UR at 64
@@ -338,7 +360,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             AmpereOp x = new(context.CurrOp);
             StorageKind kind = x.Opcode is 0x387 or 0x987 ? StorageKind.LocalMemory : StorageKind.SharedMemory;
 
-            EmitStore(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 64), x.Rb, (int)x.SignedField(40, 64));
+            EmitStore(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 64, kind == StorageKind.SharedMemory), x.Rb, (int)x.SignedField(40, 64));
         }
 
         // ---- surfaces ----
@@ -396,6 +418,44 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             context.Barrier();
+        }
+
+        // MEMBAR: scope 76..79 (Mesa NAK sm70_encode.rs OpMemBar: 0 CTA, 2 GPU, 3 system; 5, which Mario Kart World encodes, is a system-wide scope after
+        // the Eglantine fork's lower_to_maxwell.h:1057), 72 .MMIO and 80 .SC clear. CTA orders the workgroup's memory; every wider scope is a device
+        // barrier, as Maxwell's MEMBAR translates (Metal has no scope beyond the device)
+        public static void AMembar(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+            int scope = x.Bits(76, 79);
+
+            if (x.Bits(32, 64) != 0 || x.Bits(64, 96) != scope << 12 || scope is not (0 or 2 or 3 or 5))
+            {
+                throw AFail(context, $"MEMBAR form (scope {scope})");
+            }
+
+            if (scope == 0)
+            {
+                context.GroupMemoryBarrier();
+            }
+            else
+            {
+                context.MemoryBarrier();
+            }
+        }
+
+        // ERRBAR (0x9ab; the name from Eden-NS2's ampere_isa_table.h:401, no encoder in Mesa NAK) with words 1 and 2 zero: a device memory barrier, as the
+        // Eglantine fork's lower_to_maxwell.h:1061 lowers it. A conservative stand-in: what ERRBAR waits for (prior memory errors) has no public
+        // description, and a device barrier orders at least as much
+        public static void AErrbar(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+
+            if (x.Bits(32, 96) != 0)
+            {
+                throw AFail(context, "ERRBAR form");
+            }
+
+            context.MemoryBarrier();
         }
 
         // ---- textures ----
@@ -697,6 +757,18 @@ namespace Ryujinx.Graphics.Shader.Instructions
                         type = SamplerType.TextureBuffer;
                         sources.RemoveAt(sources.Count - 1);
                         flags &= ~TextureFlags.LodLevel;
+                    }
+                    else if (Sample1DAs2D)
+                    {
+                        // nxnative: as Maxwell's TLD (InstEmitTexture.cs): the descriptor decides between a 1D texture and a texture buffer, so with no type answer the read is 2D at
+                        // (x & 0x3FFF, x >> 14), and the host binds a texture buffer in such a slot as rows of 16384 texels (nvn_mtl.m tbuf_as_2d). Read as a 1D texture, Pokémon Pokopia's
+                        // buffer textures came back as zeros, and its compute shader 70ab27e185dea4ab, which walks a list held in them, hung the GPU
+                        Operand coord = sources[0];
+
+                        sources[0] = context.BitwiseAnd(coord, Const(0x3FFF));
+                        sources.Insert(1, context.ShiftRightU32(coord, Const(14)));
+                        context.TranslatorContext.GpuAccessor.RecordTexelFetch1D(handle);
+                        type = SamplerType.Texture2D;
                     }
                 }
             }

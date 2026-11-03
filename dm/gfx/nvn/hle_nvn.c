@@ -235,6 +235,17 @@ NVN(nvnDeviceGetDepthMode, NVNdepthMode, const NVNdevice *d) { return ((const de
 NVN(nvnDeviceFinalizeCommandHandle, void, NVNdevice *d, NVNcommandHandle h) { (void)d; (void)h; }
 
 // ---------- Memory pools ----------
+// DM_NVN_POOLHW=1: how far the game's textures and buffers have reached into each large memory pool, a line each time a pool's mark passes another 64 MB: what a pool really needs, for a game whose pools
+// do not fit a small Mac. A pool in the residency set is wired whole, used or not (pool_res)
+static int pool_hw_on(void) { static int on = -1; if (on < 0) on = getenv("DM_NVN_POOLHW") != NULL; return on; }
+static void pool_hw_note(const pool_t *p, uint64_t end) {
+    if (!p || p->size < (64u << 20)) return;
+    static struct { const pool_t *p; uint64_t hw; } t[16]; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mu);
+    int i = 0; while (i < 16 && t[i].p && t[i].p != p) i++;
+    if (i < 16) { t[i].p = p; if (end >> 26 > t[i].hw >> 26) LOG("[nvn] pool %p of %llu MB (flags %#x): used up to %llu MB", (const void *)p, (unsigned long long)(p->size >> 20), p->flags, (unsigned long long)(end >> 20)); if (end > t[i].hw) t[i].hw = end; }
+    pthread_mutex_unlock(&mu);
+}
 NVN(nvnMemoryPoolBuilderSetDefaults, void, NVNmemoryPoolBuilder *b) { memset(b, 0, sizeof(pool_builder_t)); }
 NVN(nvnMemoryPoolBuilderSetDevice, void, NVNmemoryPoolBuilder *b, NVNdevice *d) { ((pool_builder_t *)b)->dev = d; }
 NVN(nvnMemoryPoolBuilderSetStorage, void, NVNmemoryPoolBuilder *b, void *m, size_t n) { ((pool_builder_t *)b)->mem = m; ((pool_builder_t *)b)->size = n; }
@@ -491,6 +502,7 @@ int nvn_flushed(const void *p, uint64_t n) {   // whether the CPU flushed any of
     return r;
 }
 NVN(nvnTextureInitialize, NVNboolean, NVNtexture *t, const NVNtextureBuilder *b) {
+    if (pool_hw_on()) pool_hw_note(TB(b)->pool, (uint64_t)TB(b)->off + h_nvnTextureBuilderGetStorageSize(b));
     const tex_builder_t *s = (const tex_builder_t *)b; tex_t *o = TX(t);
     // Re-initializing a texture object that is still live (without a Finalize first): release the host texture of the old serial first. SMBW re-initializes its transient render targets on the same object every frame and never Finalizes them;
     //   previously every init created a new private MTLTexture and the old one stayed in the serial table forever, so GPU memory grew about 13 MB per frame (killed by the memory watchdog at 24 GB)
@@ -2044,6 +2056,7 @@ NVN(nvnBufferBuilderSetDefaults, void, NVNbufferBuilder *b) { NVNdevice *d = BB(
 NVN(nvnBufferBuilderSetDevice, void, NVNbufferBuilder *b, NVNdevice *d) { BB(b)->dev = d; }
 NVN(nvnBufferBuilderSetStorage, void, NVNbufferBuilder *b, NVNmemoryPool *p, ptrdiff_t off, size_t n) { BB(b)->pool = (const pool_t *)p; BB(b)->off = off; BB(b)->size = n; }
 NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *buf, const NVNbufferBuilder *b) {
+    if (pool_hw_on()) pool_hw_note(BB(b)->pool, (uint64_t)BB(b)->off + BB(b)->size);
     const buf_builder_t *bb = (const buf_builder_t *)b;
     if (!bb->pool || !bb->pool->mem) { LOG("[RED] BufferInitialize: pool has no storage (pool %p flags %#x offset %#llx size %#llx)", (const void *)bb->pool, bb->pool ? bb->pool->flags : 0, (unsigned long long)bb->off, (unsigned long long)bb->size); return 0; }
     // The NVN driver does not check a buffer's range against its pool, and the host's own GPU access never goes by the buffer: it takes an address and a length from the command (mtl_addr resolves it
