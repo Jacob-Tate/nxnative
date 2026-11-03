@@ -191,6 +191,9 @@ MATCH_CUTS = {'sdk': [
     # SDK 22.2.0 (EA SPORTS FC 27, Well Dweller): the SDK 19 / 20 constructor, instruction for instruction up to its cold path, which gives each failing result its own abort (32 bytes more);
     # SDK 21.4.3 (Mina the Hollower, sdk+0x14fbe0) has the same body, its callees differing from 20.5.22's only in register allocation
     node(276, ['8960fe237061c387226a3775daf750a646dd0ee12eccf3d1340248683a6a7d78', '5bd99a6aa6e6f4be9dcc6bef7a506abd9d0e5cd83e7d55bfa3efb9906a86c758'], 0x10, '08fca752', '087ca052', 0x7c, '09fca752', '097ca052'),
+    # SDK 22.2.0 built for the Switch 2 (Fire Emblem Fortune's Weave): the constructor at sdk+0x16ba30 with return address signing and its own frame. The host's StandardAllocator cap counts on the
+    # 62 MB (alias_room): with 1 GB the capped region did not fit the alias region
+    node(328, ['5f2f7a70fa5c25aeb7020f75dc785fd6ffe6c2f5c72d8fcb30e0ea9a0bb4bbc5'], 0x18, '08fca752', '087ca052', 0xa4, '09fca752', '097ca052'),
     # SDK 7.3.2 (DRAGON QUEST XI S), 8.2.1 (Super Smash Bros. Ultimate), 8.3.1 (Paper Mario: The Origami King), 10.4.1 (Advance Wars 1+2), 10.4.8 (Pikmin 4)
     align(352, ['006abd214d94c93386735550cee4fe7708bc1f0d1812663123cfa3b9611f1533', '42167e4d3c710e11937e45a9e420fdd0ed9a410386c17da4d1d896b847d3b0d6'], 'eb030732', 'ea030232', 'e8030a32'),
     # SDK 11.4.0 (Pokémon Legends: Arceus, Kirby and the Forgotten Land): the next rule's size classes with 8 more bytes of body; the 4 GB StandardAllocator region of Arceus's nninitStartup

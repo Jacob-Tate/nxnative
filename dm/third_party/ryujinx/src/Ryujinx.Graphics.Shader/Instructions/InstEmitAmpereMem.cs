@@ -23,34 +23,38 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             x(0x981, InstName.Ldg, ALdg, N);
             x(0x381, InstName.Ldg, ALdg, N);
+            x(0xf8c, InstName.Atoms, AAtoms, N);
             x(0x986, InstName.Stg, AStg, N, writesRd: false);
             x(0x386, InstName.Stg, AStg, N, writesRd: false);
             x(0x98e, InstName.Red, ARed, N, writesRd: false);
             x(0x9a8, InstName.Atom, AAtomg, N);
             x(0x3a8, InstName.Atom, AAtomg, N);
-            x(0x38c, InstName.Atoms, AAtoms, N);
-            x(0x98c, InstName.Atoms, AAtoms, N);
             x(AmpereOpcodes.Ldl, InstName.Ldl, ALdLocalShared, N);
             x(0x984, InstName.Lds, ALdLocalShared, N);
             x(0x387, InstName.Stl, AStLocalShared, N, writesRd: false);
             x(0x987, InstName.Stl, AStLocalShared, N, writesRd: false);
             x(0x388, InstName.Sts, AStLocalShared, N, writesRd: false);
             x(0x988, InstName.Sts, AStLocalShared, N, writesRd: false);
+            x(0x38c, InstName.Atoms, AAtoms, N);
+            x(0x38d, InstName.Atoms, AAtomsCas, N);
+            x(0x992, InstName.Membar, AMembar, N, writesRd: false);
+            x(0x9ab, InstName.Membar, AErrbar, N, writesRd: false);
 
             x(0xb60, InstName.Tex, ATex, InstProps.Tex);
+            x(0x361, InstName.Tex, ATex, InstProps.Tex);
+            x(0xf60, InstName.Tex, ATex, InstProps.Tex);
             x(0xb66, InstName.Tld, ATex, InstProps.Tex);
             x(0xb63, InstName.Tld4, ATex, InstProps.Tex);
             x(0xb69, InstName.Tmml, ATex, InstProps.Tex);
             x(0xb6c, InstName.Txd, ATex, InstProps.Tex);
             x(0xb6f, InstName.Txq, ATxq, InstProps.Tex);
+            x(0x370, InstName.Txq, ATxq, InstProps.Tex);
             x(0xb97, InstName.Suld, ASurface, N);
             x(0xb99, InstName.Suld, ASurface, N);
             x(0xb9b, InstName.Sust, ASurface, N, writesRd: false);
             x(0xb9d, InstName.Sust, ASurface, N, writesRd: false);
             x(0x593, InstName.Suatom, ASuatom, N);
             x(0xb1d, InstName.Bar, ABar, N, writesRd: false);
-            x(0x992, InstName.Membar, AMembar, N, writesRd: false);
-            x(0x9ab, InstName.Membar, AErrbar, N, writesRd: false);
         }
 
         // ---- attributes ----
@@ -312,19 +316,48 @@ namespace Ryujinx.Graphics.Shader.Instructions
             ASet(context, x, res);
         }
 
+        // MEMBAR: the order of this thread's memory operations
+        public static void AMembar(EmitterContext context)
+        {
+            context.MemoryBarrier();
+        }
+
+        // ERRBAR, after a MEMBAR: waits for errors of earlier memory operations to be reported, which here is nothing to do
+        public static void AErrbar(EmitterContext context)
+        {
+        }
+
+        // ATOMS.CAS Rd, [Ra + offset], Rb (expected), Rc (new value): Rd = 1 when the swap happened, not the old value (Fire Emblem Fortune's Weave's only use is a retry loop for a float add that repeats until Rd == 1).
+        // Only the 32-bit form (operation 3 at 87..91, size 0) occurs
+        public static void AAtomsCas(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+            Operand ra = x.Ra >= RegisterConsts.RegisterZeroIndex ? Const(0) : AStride(context, x, Register(x.Ra, RegisterType.Gpr));
+            Operand offset = context.ShiftRightU32(context.IAdd(ra, Const((int)x.SignedField(40, 64))), Const(2));
+            Operand expected = context.Copy(x.Rb >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rb, RegisterType.Gpr));
+            Operand value = x.Rc >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rc, RegisterType.Gpr);
+            Operand old = context.AtomicCompareAndSwap(StorageKind.SharedMemory, Const(context.ResourceManager.SharedMemoryId), offset, expected, value);
+
+            ASet(context, x, context.ConditionalSelect(context.ICompareEqual(old, expected), Const(1), Const(0)));
+        }
+
         // ---- local and shared memory ----
 
-        // The 32-bit address of a local / shared access: Ra plus the uniform register (at urLo in the uniform form, bit 91). A shared access scales Ra by
-        // the stride at 78..80 (X1, X4, X8, X16; NAK's OffsetStride): Mario Kart World's froxel compute shaders index vec4 slots as LDS.128 [Ra.X16 + imm]
-        private static Operand ALocalAddress(EmitterContext context, AmpereOp x, int urLo, bool shared)
+        // A shared or local address register's stride, bits 78..79: it counts elements of 1, 4, 8 or 16 bytes (Fire Emblem Fortune's Weave has 1 on all its 32-bit and 2 on all its 64-bit accesses with a
+        // register, whose code bounds that register by the element count). The field is a scale, not the access size: Pokemon Pokopia has 3 on 3,312 shared accesses of 4, 8 and 16 bytes
+        private static Operand AStride(EmitterContext context, AmpereOp x, Operand ra)
         {
-            Operand addr = Register(x.Ra, RegisterType.Gpr);
-            int stride = shared ? x.Bits(78, 80) : 0;
+            int stride = x.Bits(78, 80);
 
-            if (stride != 0 && x.Ra != RegisterConsts.RegisterZeroIndex)
-            {
-                addr = context.ShiftLeft(addr, Const(stride + 1));
-            }
+            return stride == 0 ? ra : context.ShiftLeft(ra, Const(stride + 1));
+        }
+
+        // The 32-bit address of a local / shared access: Ra by its stride, plus the uniform register (at urLo in the uniform form, bit 91). LDSM keeps its mode in the stride's bits, so it passes
+        // stride: false: scaled by that mode, Donkey Kong Bananza's upscaler read its transposed matrices (LDSM.MT88) four times too far along and the picture came out as an 8 x 8 lattice of garbage
+        private static Operand ALocalAddress(EmitterContext context, AmpereOp x, int urLo, bool stride = true)
+        {
+            Operand ra = Register(x.Ra, RegisterType.Gpr);
+            Operand addr = x.Ra == RegisterConsts.RegisterZeroIndex ? Const(0) : stride ? AStride(context, x, ra) : ra;
 
             if (x.Bit(91) && x.Bits(urLo, urLo + 6) != RegisterConsts.UniformZeroIndex)
             {
@@ -334,24 +367,13 @@ namespace Ryujinx.Graphics.Shader.Instructions
             return addr;
         }
 
-        // ATOMS Rd, [Ra + UR + offset], Rb (Mesa NAK sm70_encode.rs OpAtom, MemSpace::Shared): UR at 64, size 73..76, offset 40..64, operation 87..91. Maxwell's Atoms addresses words
-        public static void AAtoms(EmitterContext context)
-        {
-            AmpereOp x = new(context.CurrOp);
-            Operand addr = context.IAdd(ALocalAddress(context, x, 64, shared: true), Const((int)x.SignedField(40, 64)));
-            Operand id = Const(context.ResourceManager.SharedMemoryId);
-            Operand res = EmitAtomicOp(context, StorageKind.SharedMemory, (AtomOp)x.Bits(87, 91), (AtomSize)x.Bits(73, 76), id, context.ShiftRightU32(addr, Const(2)), Register(x.Rb, RegisterType.Gpr));
-
-            ASet(context, x, res);
-        }
-
         // LDL / LDS Rd, [Ra + UR + offset]: UR at 32, size 73..76, offset 40..64
         public static void ALdLocalShared(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
             StorageKind kind = x.Opcode == AmpereOpcodes.Ldl ? StorageKind.LocalMemory : StorageKind.SharedMemory;
 
-            EmitLoad(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 32, kind == StorageKind.SharedMemory), x.Rd, (int)x.SignedField(40, 64));
+            EmitLoad(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 32), x.Rd, (int)x.SignedField(40, 64));
         }
 
         // STL / STS [Ra + UR + offset], Rb: UR at 64
@@ -360,7 +382,36 @@ namespace Ryujinx.Graphics.Shader.Instructions
             AmpereOp x = new(context.CurrOp);
             StorageKind kind = x.Opcode is 0x387 or 0x987 ? StorageKind.LocalMemory : StorageKind.SharedMemory;
 
-            EmitStore(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 64, kind == StorageKind.SharedMemory), x.Rb, (int)x.SignedField(40, 64));
+            EmitStore(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 64), x.Rb, (int)x.SignedField(40, 64));
+        }
+
+        // ATOMS Rd, [Ra + offset], Rb: an atomic on shared memory, its operation (87..91) and size (73..76) as ATOMG's, its offset in bytes as STS's (Pokemon Pokopia's 51 compute shaders: ADD on
+        // counters at the end of their shared memory, MAX; Splatoon Raiders has 6)
+        public static void AAtoms(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+            bool one = x.Opcode == 0xf8c;
+
+            // 0xf8c, ATOMS.POPC.INC: an increment by 1 with no source register, the operation field 10 (the hardware sums the warp's lanes on one address; per lane an add of 1). Its one user is
+            // Pokemon Pokopia's luminance histogram, hist[bin]++ (2118ab534fac88c6): the field for Rb names a register the shader never wrote on three of its four paths. Other encodings stop here
+            if (one ? x.Bits(87, 91) != 10 || !x.Bit(91) || x.Rd != RegisterConsts.RegisterZeroIndex : x.Bit(91))
+            {
+                throw AFail(context, "ATOMS with a uniform register");
+            }
+
+            Operand offset = context.ShiftRightU32(context.IAdd(ALocalAddress(context, x, 64), Const((int)x.SignedField(40, 64))), Const(2));
+            Operand id = Const(context.ResourceManager.SharedMemoryId);
+
+            if (one)
+            {
+                EmitAtomicOp(context, StorageKind.SharedMemory, AtomOp.Add, (AtomSize)x.Bits(73, 76), id, offset, Const(1));
+                return;
+            }
+
+            Operand value = x.Rb >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rb, RegisterType.Gpr);
+            Operand res = EmitAtomicOp(context, StorageKind.SharedMemory, (AtomOp)x.Bits(87, 91), (AtomSize)x.Bits(73, 76), id, offset, value);
+
+            ASet(context, x, res);
         }
 
         // ---- surfaces ----
@@ -418,44 +469,6 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             context.Barrier();
-        }
-
-        // MEMBAR: scope 76..79 (Mesa NAK sm70_encode.rs OpMemBar: 0 CTA, 2 GPU, 3 system; 5, which Mario Kart World encodes, is a system-wide scope after
-        // the Eglantine fork's lower_to_maxwell.h:1057), 72 .MMIO and 80 .SC clear. CTA orders the workgroup's memory; every wider scope is a device
-        // barrier, as Maxwell's MEMBAR translates (Metal has no scope beyond the device)
-        public static void AMembar(EmitterContext context)
-        {
-            AmpereOp x = new(context.CurrOp);
-            int scope = x.Bits(76, 79);
-
-            if (x.Bits(32, 64) != 0 || x.Bits(64, 96) != scope << 12 || scope is not (0 or 2 or 3 or 5))
-            {
-                throw AFail(context, $"MEMBAR form (scope {scope})");
-            }
-
-            if (scope == 0)
-            {
-                context.GroupMemoryBarrier();
-            }
-            else
-            {
-                context.MemoryBarrier();
-            }
-        }
-
-        // ERRBAR (0x9ab; the name from Eden-NS2's ampere_isa_table.h:401, no encoder in Mesa NAK) with words 1 and 2 zero: a device memory barrier, as the
-        // Eglantine fork's lower_to_maxwell.h:1061 lowers it. A conservative stand-in: what ERRBAR waits for (prior memory errors) has no public
-        // description, and a device barrier orders at least as much
-        public static void AErrbar(EmitterContext context)
-        {
-            AmpereOp x = new(context.CurrOp);
-
-            if (x.Bits(32, 96) != 0)
-            {
-                throw AFail(context, "ERRBAR form");
-            }
-
-            context.MemoryBarrier();
         }
 
         // ---- textures ----
@@ -571,6 +584,25 @@ namespace Ryujinx.Graphics.Shader.Instructions
             AmpereOp x = new(context.CurrOp);
             int opcode = x.Opcode;
 
+            // TEX through a handle in a register, not named by its offset: the compiler's form for a handle it read itself, usually from a table at a computed offset. BindlessElimination takes the
+            // handle from there, as for Maxwell's TEX.B. The other fields are 0xb60's. 0xf60: a uniform register at 40..46. 0x361 (bit 59 set): a register, the first of the second source block,
+            // before the LOD (a census of Fire Emblem Fortune's Weave's 3,327: of the sources that an LDC just wrote, always that place, with and without .SCR). Rc stays the second destination in both
+            Operand boundHandle = null;
+            bool handleInB = opcode == 0x361;
+            bool bindless = handleInB || opcode == 0xf60;
+
+            if (opcode == 0xf60)
+            {
+                int ur = x.Bits(40, 46);
+
+                boundHandle = ur == RegisterConsts.UniformZeroIndex ? Const(0) : context.Copy(Register(ur, RegisterType.Uniform));
+            }
+
+            if (bindless)
+            {
+                opcode = 0xb60;
+            }
+
             TexDim dim = ATexDim(context, x.Bits(61, 64));
             SamplerType type = ConvertSamplerType(dim);
             bool isArray = type.HasFlag(SamplerType.Array);
@@ -632,9 +664,15 @@ namespace Ryujinx.Graphics.Shader.Instructions
                     break;
             }
 
-            (int handle, int cbufSlot) = ATexHandle(context, x);
+            (int handle, int cbufSlot) = bindless ? (0, TextureOperation.DefaultCbufSlot) : ATexHandle(context, x);
             List<Operand> sources = [];
             Operand arrayIndex = null;
+            bool is1DTo2D = false;
+
+            if (bindless)
+            {
+                flags |= TextureFlags.Bindless;
+            }
 
             if (opcode == 0xb6c)
             {
@@ -642,6 +680,13 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 (List<Operand> a, List<Operand> b) = ATexBlocks(context, x, n0, 2 * coords);
 
                 sources.AddRange(a.GetRange(0, coords));
+
+                if (Sample1DAs2D && (type & SamplerType.Mask) == SamplerType.Texture1D)
+                {
+                    sources.Add(ConstF(0));
+                    type = SamplerType.Texture2D | (type & SamplerType.Array);
+                    is1DTo2D = true;
+                }
 
                 if (isArray)
                 {
@@ -655,11 +700,22 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
                 sources.AddRange(b);
 
+                if (is1DTo2D)
+                {
+                    sources.Add(ConstF(0));
+                    sources.Add(ConstF(0));
+                }
+
                 if (offset)
                 {
                     for (int i = 0; i < coords; i++)
                     {
                         sources.Add(context.BitfieldExtractS32(a[coords], Const(16 + i * 4), Const(4)));
+                    }
+
+                    if (is1DTo2D)
+                    {
+                        sources.Add(Const(0));
                     }
 
                     flags |= TextureFlags.Offset;
@@ -668,8 +724,18 @@ namespace Ryujinx.Graphics.Shader.Instructions
             else
             {
                 int n0 = coords + (isArray ? 1 : 0);
-                (List<Operand> a, List<Operand> b) = ATexBlocks(context, x, n0, n1);
+                (List<Operand> a, List<Operand> b) = ATexBlocks(context, x, n0, n1 + (handleInB ? 1 : 0));
                 int ia = 0, ib = 0;
+
+                if (handleInB)
+                {
+                    boundHandle = b[ib++];
+                }
+
+                if (bindless)
+                {
+                    sources.Add(boundHandle);
+                }
 
                 if (isArray)
                 {
@@ -679,6 +745,32 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 for (int i = 0; i < coords; i++)
                 {
                     sources.Add(a[ia++]);
+                }
+
+                // nxnative: as on Maxwell (InstEmitTexture.cs), the descriptor decides between a 1D texture and a texture buffer, and with no type answer (no game's NVN2 shaders have one)
+                // a plain fetch reads 2D at (x & 0x3FFF, x >> 14): a 1D texture, one row on the host, reads (x, 0) as before, and the host binds a texture buffer as rows of 16384 texels over
+                // the same memory (nvn_mtl.m tbuf_as_2d). Every other 1D form cannot be a texture buffer and reads row 0. Pokemon Pokopia's KTGL light lists read 0 before this, as a dummy
+                if (Sample1DAs2D && (type & SamplerType.Mask) == SamplerType.Texture1D)
+                {
+                    bool plainFetch = opcode == 0xb66 && !isArray && lod == 1 && !offset && !ms;
+
+                    if (!plainFetch || context.TranslatorContext.GpuAccessor.QuerySamplerType(handle) != SamplerType.TextureBuffer)
+                    {
+                        if (plainFetch)
+                        {
+                            Operand fetchX = sources[^1];
+                            sources[^1] = context.BitwiseAnd(fetchX, Const(0x3FFF));
+                            sources.Add(context.ShiftRightU32(fetchX, Const(14)));
+                            context.TranslatorContext.GpuAccessor.RecordTexelFetch1D(handle);
+                        }
+                        else
+                        {
+                            sources.Add(opcode == 0xb66 ? Const(0) : ConstF(0));
+                        }
+
+                        type = SamplerType.Texture2D | (type & SamplerType.Array);
+                        is1DTo2D = true;
+                    }
                 }
 
                 if (isArray)
@@ -716,6 +808,11 @@ namespace Ryujinx.Graphics.Shader.Instructions
                     for (int i = 0; i < coords; i++)
                     {
                         sources.Add(context.BitfieldExtractS32(off0, Const(i * 4), Const(4)));
+                    }
+
+                    if (is1DTo2D)
+                    {
+                        sources.Add(Const(0));
                     }
 
                     flags |= TextureFlags.Offset;
@@ -758,18 +855,6 @@ namespace Ryujinx.Graphics.Shader.Instructions
                         sources.RemoveAt(sources.Count - 1);
                         flags &= ~TextureFlags.LodLevel;
                     }
-                    else if (Sample1DAs2D)
-                    {
-                        // nxnative: as Maxwell's TLD (InstEmitTexture.cs): the descriptor decides between a 1D texture and a texture buffer, so with no type answer the read is 2D at
-                        // (x & 0x3FFF, x >> 14), and the host binds a texture buffer in such a slot as rows of 16384 texels (nvn_mtl.m tbuf_as_2d). Read as a 1D texture, Pokémon Pokopia's
-                        // buffer textures came back as zeros, and its compute shader 70ab27e185dea4ab, which walks a list held in them, hung the GPU
-                        Operand coord = sources[0];
-
-                        sources[0] = context.BitwiseAnd(coord, Const(0x3FFF));
-                        sources.Insert(1, context.ShiftRightU32(coord, Const(14)));
-                        context.TranslatorContext.GpuAccessor.RecordTexelFetch1D(handle);
-                        type = SamplerType.Texture2D;
-                    }
                 }
             }
 
@@ -787,7 +872,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
             else
             {
-                SetBindingPair setAndBinding = context.ResourceManager.GetTextureOrImageBinding(
+                SetBindingPair setAndBinding = bindless ? default : context.ResourceManager.GetTextureOrImageBinding(
                     Instruction.TextureSample,
                     type,
                     TextureFormat.Unknown,
@@ -831,8 +916,12 @@ namespace Ryujinx.Graphics.Shader.Instructions
             AmpereOp x = new(context.CurrOp);
             int query = x.Bits(62, 64);
             int mask = x.Bits(72, 76);
-            (int handle, int cbufSlot) = ATexHandle(context, x);
-            SamplerType type = context.TranslatorContext.GpuAccessor.QuerySamplerType(handle);
+            // 0x370 is to 0xb6f as 0x361 to 0xb60: the handle in a register, Ra, with the LOD after it (Fire Emblem Fortune's Weave's lighting: MOV R1c, R64; MOV R1d, RZ; TXQ R1d, R1c). The shape
+            // has no field here and the size query does not depend on it, so 2D, as Maxwell's bindless TXQ
+            bool bindless = x.Opcode == 0x370;
+            (int handle, int cbufSlot) = bindless ? (0, TextureOperation.DefaultCbufSlot) : ATexHandle(context, x);
+            SamplerType type = bindless ? SamplerType.Texture2D : context.TranslatorContext.GpuAccessor.QuerySamplerType(handle);
+            TextureFlags flags = bindless ? TextureFlags.Bindless : TextureFlags.None;
 
             int count = BitOperations.PopCount((uint)mask);
             Operand[] results = new Operand[count];
@@ -842,11 +931,13 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 results[i] = Local();
             }
 
-            Operand[] sources = [x.Ra >= RegisterConsts.RegisterZeroIndex ? Const(0) : context.Copy(Register(x.Ra, RegisterType.Gpr))];
+            Operand Src(int reg) => reg >= RegisterConsts.RegisterZeroIndex ? Const(0) : context.Copy(Register(reg, RegisterType.Gpr));
+
+            Operand[] sources = bindless ? [Src(x.Ra), Src(x.Ra + 1)] : [Src(x.Ra)];
 
             if (query == 0)
             {
-                SetBindingPair setAndBinding = context.ResourceManager.GetTextureOrImageBinding(
+                SetBindingPair setAndBinding = bindless ? default : context.ResourceManager.GetTextureOrImageBinding(
                     Instruction.TextureQuerySize, type, TextureFormat.Unknown, TextureFlags.None, cbufSlot, handle);
                 int r = 0;
 
@@ -854,13 +945,13 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 {
                     if ((mask & (1 << comp)) != 0)
                     {
-                        context.Copy(results[r++], context.TextureQuerySize(type, TextureFlags.None, setAndBinding, comp, sources));
+                        context.Copy(results[r++], context.TextureQuerySize(type, flags, setAndBinding, comp, sources));
                     }
                 }
             }
             else if (query == 1)
             {
-                SetBindingPair setAndBinding = context.ResourceManager.GetTextureOrImageBinding(
+                SetBindingPair setAndBinding = bindless ? default : context.ResourceManager.GetTextureOrImageBinding(
                     Instruction.TextureQuerySamples, type, TextureFormat.Unknown, TextureFlags.None, cbufSlot, handle);
                 int r = 0;
 
@@ -868,7 +959,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 {
                     if ((mask & (1 << comp)) != 0)
                     {
-                        context.Copy(results[r++], comp == 2 ? context.TextureQuerySamples(type, TextureFlags.None, setAndBinding, sources) : Const(0));
+                        context.Copy(results[r++], comp == 2 ? context.TextureQuerySamples(type, flags, setAndBinding, sources) : Const(0));
                     }
                 }
             }
