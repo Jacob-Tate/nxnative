@@ -10,6 +10,7 @@ A Switch 2 game: SDK 20.5.25 built for the Switch 2 (`Ounce`), Koei Tecmo's KTGL
 | `mem_used 0x6000000` | `game.tsv` | the rewritten modules take 82 MB (1.0.4) and 86 MB (2.0.1), more than the default 64 MB that `SetHeapSize` checks the game's request against |
 | `pad_layout full` | `game.tsv` | |
 | Memory pool sizes cut, 1.0.4 only | [`patches.py`](patches.py), `main` build `816c5358…` | [Memory](#memory): a platform workaround |
+| `depth_mode zero` | `game.tsv` | the game sets near = 0 (the log's `depth mode` line). Without the key the pipeline archive made offline holds the other entry point, and the host refuses it |
 
 ## Versions
 
@@ -25,7 +26,7 @@ A Switch 2 game: SDK 20.5.25 built for the Switch 2 (`Ounce`), Koei Tecmo's KTGL
 
 ## Shaders
 
-- `cc679c7b4d3e703c` does not translate (`LDC with a bindless bank`). The boot loads it and logs a red line; it has not been seen drawing (open). The census also lists f55 three times, two more of that LDC and 16 BRX with no target (open).
+- Resolved: `cc679c7b4d3e703c` did not translate (`LDC with a bindless bank or an address mode`): an indexed read of c1 with the bank in the address register, found on Hyrule Warriors: Age of Imprisonment, which ships the same shader ([LDC with the bank in its address register](../../../docs/reference/shaders.md#ldc-with-the-bank-in-its-address-register-is)); all 8,158 shaders of the playtest library now translate, and the walk below logged no shader failing to load. The census also lists f55 three times, two more of that LDC and 16 BRX with no target: whether they are the forms since translated ([Barrier moves around warp shuffles](../../../docs/reference/shaders.md#barrier-moves-around-warp-shuffles)) is not checked (open).
 - A `3D binding fallback` line fires once at about frame 2100: a 2D 8x8 texture in a 3D slot. The shader is not identified (open).
 - The iPhone's 1.0.4 runs were on chain `8872f4e185a9`, before 0xf8c and 0x883 were decoded: the luminance histogram `2118ab534fac88c6` and `5a542c6c2f5ad3ea` were skipped there. Not yet run on the phone with them.
 
@@ -53,7 +54,7 @@ Address space: the game's fixed heap budgets total 7.9 GB, in `main+0x104024c` (
 
 ## Driving it on the Mac
 
-The first boot shows the language list: `A`, `LUp`, `A` picks English. The character choice takes `LLeft` before `A`. From a warm cache, `A A LLeft A A Plus` reaches walking in about 300 s. On later boots, `A` at the title screen a few times continues the save and reaches walking in about 110 s. The work folder has `run/boot.sh`, `run/hdrive.sh` (no window, timed control lines) and `run/spam.sh`.
+The first boot shows the language list: `A`, `LUp`, `A` picks English. The character choice takes `LLeft` before `A`. From a warm cache, `A A LLeft A A Plus` reaches walking in about 300 s. On later boots, `A` at the title screen a few times continues the save and reaches walking in about 110 s. The work folder has `run/boot.sh`, `run/hdrive.sh` (no window, timed control lines) and `run/spam.sh`. The packed app takes about a minute to reach the language list (14 s of it the prepare step on a second start), so the fixed times in `run/spam.sh` miss it: press the keys once the list shows.
 
 On 1.0.4 in a new save: about 40 s to the language screen, `A`, `Up` (the default is No), `A`; `A` about every 1.5 s through the opening; "need more time?" defaults to Yes, so choose No. On an 8 GB Mac, run it only under a wired-memory guard ([Memory](#memory)).
 
@@ -63,9 +64,11 @@ On 1.0.4 in a new save: about 40 s to the language screen, `A`, `Up` (the defaul
 - Only the first area has been played on 2.0.1; 1.0.4 has an hour on the iPhone. A new save written through the game has not been checked on 2.0.1.
 - A full iOS shader build, and an IPA on this chain.
 - Audio on 1.0.4: the game's samples are real (`DM_AUDIO_DUMP`: peak 11,968); the Mac host's default is a silent sink, so `DM_AUDIO=1` plays them.
+- The pipeline archive saved nothing on the walk from the language list to the first area, on the partial library: archive lookups found 0 and found none 655 times, and 216 bases were compiled, though the host's probe found the archive's bases. The draws' pairs seem not to be those of `shader_pairs.tsv`, which come from BNSH variations. Whether a full library differs is not checked.
 
 ## Found on this game
 
+- [One compile for a pixel shader's side entry points](../../../docs/reference/shaders.md#one-compile-for-a-pixel-shaders-side-entry-points): 57% of the map's compiles were `_ba` and `_bl` libraries; a cold build of 1,021 shaders now takes 48% of the CPU on the Mac's flags and 47% on the iPhone's.
 - [KTGL on NVN2: Switch 2 GLSLC outputs and LD_ / LI_ LINKDATA](../../../docs/reference/shaders.md#ktgl-on-nvn2-switch-2-glslc-outputs-and-ld_--li_-linkdata): the split found almost none of its shaders.
 - [HADD2 and HMUL2 with an immediate](../../../docs/reference/shaders.md#hadd2-and-hmul2-with-an-immediate): the GPU hang and 88 ms frames.
 - [Scaled shared memory addresses](../../../docs/reference/shaders.md#scaled-shared-memory-addresses): stride 3 in use, on accesses of every size.
@@ -76,3 +79,8 @@ On 1.0.4 in a new save: about 40 s to the language screen, `A`, `Up` (the defaul
 - [The Joy-Con mouse pointer](../../../docs/reference/services.md#the-joy-con-mouse-pointer) and [GameShare guest displays](../../../docs/reference/services.md#gameshare-guest-displays): boot aborts.
 - [A wired pool past the GPU working set panics the kernel](../../../docs/reference/memory.md#a-wired-pool-past-the-gpu-working-set-panics-the-kernel).
 - [Submissions past the command allocator cap wait for the GPU](../../../docs/reference/frame-rate.md#submissions-past-the-command-allocator-cap-wait-for-the-gpu).
+- [A shader build that keeps its packages in memory runs one worker at a time](../../../docs/reference/shaders.md#a-shader-build-that-keeps-its-packages-in-memory-runs-one-worker-at-a-time): the full build at one or two shaders a second (resolved).
+- [Each Metal compile instantiates Metal's texture classes again](../../../docs/reference/shaders.md#each-metal-compile-instantiates-metals-texture-classes-again): the full build's remaining hours.
+- [Rewrites that try every character of a large source](../../../docs/reference/shaders.md#rewrites-that-try-every-character-of-a-large-source): the builder's Python limited the full build at about 0.12 s a shader, 0.05 s after.
+- [A library that depends on its source's file name](../../../docs/reference/shaders.md#a-library-that-depends-on-its-sources-file-name): two `_bl` files differed between cold builds of the same code.
+- [Block-compressed storage the CPU wrote before first use](../../../docs/reference/nvn-objects.md#block-compressed-storage-the-cpu-wrote-before-first-use): its `IMAGE` BC1 / BC7 icons showed other items' pictures once their storage was reused (resolved).

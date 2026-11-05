@@ -10,10 +10,12 @@
 #define DUO_HARNESS_HAS_NATIVE_POSE_API 0
 #endif
 #import "DmLayout.h"
+#import "DmGameMenu.h"
 #import "DuoHarnessRuntime.h"
 #include "dm_input.h"
 #include <math.h>
 #include <stdio.h>
+void front_picture_shape(int w, int h);   // front_ios.m (dm/host/front.h)
 
 static NSArray<GCController *> *gDuoHarnessControllers;
 static BOOL gDuoHarnessControllerSwizzleInstalled;
@@ -168,7 +170,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
 
 - (void)testPortraitSeparatesAcrossHingeStatesAndUsesNativeDivision {
     CGRect landscape = CGRectMake(0, 0, 844, 390);
-    DmLayout overlay = dm_layout(landscape, UIEdgeInsetsZero, NO, CGRectNull);
+    DmLayout overlay = dm_layout(landscape, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9);
     XCTAssertFalse(overlay.separated);
     XCTAssertTrue(CGRectEqualToRect(overlay.controls, landscape));
     XCTAssertEqualWithAccuracy(overlay.game.size.width / overlay.game.size.height, 16.0 / 9.0, 0.001);
@@ -176,25 +178,25 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     CGRect portrait = CGRectMake(0, 0, 390, 844);
     UIEdgeInsets safe = UIEdgeInsetsMake(59, 0, 34, 0);
     CGRect division = CGRectMake(0, 400, 390, 24);
-    DmLayout separated = dm_layout(portrait, safe, NO, division);
+    DmLayout separated = dm_layout(portrait, safe, NO, division, DM_PICTURE_16_9);
     XCTAssertTrue(separated.separated, @"Portrait uses a valid native horizontal division even with no confirmed hinge state");
     XCTAssertEqualWithAccuracy(CGRectGetMinY(separated.game), 119, 1);
     XCTAssertLessThanOrEqual(CGRectGetMaxY(separated.game), CGRectGetMinY(division));
     XCTAssertTrue(CGRectEqualToRect(separated.controls, CGRectMake(0, 424, 390, 420)));
     XCTAssertLessThanOrEqual(CGRectGetMaxY(separated.game), CGRectGetMinY(separated.controls), @"Video and controls must not overlap");
 
-    DmLayout clipped = dm_layout(portrait, safe, NO, CGRectMake(-50, 400, 500, 24));
+    DmLayout clipped = dm_layout(portrait, safe, NO, CGRectMake(-50, 400, 500, 24), DM_PICTURE_16_9);
     XCTAssertTrue(clipped.separated, @"A division that partially overlaps the view still separates its visible panels");
     XCTAssertEqualWithAccuracy(CGRectGetMinY(clipped.controls), 424, 0.001);
     XCTAssertEqualWithAccuracy(clipped.controls.size.width, portrait.size.width, 0.001);
-    DmLayout flat = dm_layout(portrait, safe, NO, CGRectMake(0, 300, 390, 0));
+    DmLayout flat = dm_layout(portrait, safe, NO, CGRectMake(0, 300, 390, 0), DM_PICTURE_16_9);
     XCTAssertTrue(flat.separated, @"A zero-height native division remains a useful split boundary");
     XCTAssertEqualWithAccuracy(CGRectGetMinY(flat.controls), 300, 0.001, @"Prefer a valid native split away from the fallback midpoint");
     XCTAssertLessThanOrEqual(CGRectGetMaxY(flat.game), 300);
-    XCTAssertTrue(dm_layout(portrait, safe, YES, division).separated, @"A partially-open display can use the same portrait split");
-    XCTAssertTrue(dm_layout(portrait, safe, NO, CGRectNull).separated, @"Portrait without a division still uses a midpoint split");
-    XCTAssertTrue(dm_layout(portrait, safe, YES, CGRectMake(500, 400, 500, 24)).separated, @"Invalid native regions fall back to a portrait split");
-    XCTAssertTrue(dm_layout(portrait, safe, NO, CGRectMake(180, 0, 24, 844)).separated, @"A vertical region falls back to a portrait split");
+    XCTAssertTrue(dm_layout(portrait, safe, YES, division, DM_PICTURE_16_9).separated, @"A partially-open display can use the same portrait split");
+    XCTAssertTrue(dm_layout(portrait, safe, NO, CGRectNull, DM_PICTURE_16_9).separated, @"Portrait without a division still uses a midpoint split");
+    XCTAssertTrue(dm_layout(portrait, safe, YES, CGRectMake(500, 400, 500, 24), DM_PICTURE_16_9).separated, @"Invalid native regions fall back to a portrait split");
+    XCTAssertTrue(dm_layout(portrait, safe, NO, CGRectMake(180, 0, 24, 844), DM_PICTURE_16_9).separated, @"A vertical region falls back to a portrait split");
 }
 
 - (void)testPortraitFallbackFitsVideoAndControlsWithinSafeAreasAtNarrowSizes {
@@ -204,7 +206,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
         CGRect bounds = sizes[i];
         CGFloat splitY = CGRectGetMidY(bounds);
         CGRect safe = UIEdgeInsetsInsetRect(bounds, insets[i]);
-        DmLayout layout = dm_layout(bounds, insets[i], NO, CGRectNull);
+        DmLayout layout = dm_layout(bounds, insets[i], NO, CGRectNull, DM_PICTURE_16_9);
         XCTAssertTrue(layout.separated);
         XCTAssertTrue(CGRectEqualToRect(layout.controls, CGRectMake(0, splitY, bounds.size.width, bounds.size.height - splitY)));
         XCTAssertEqualWithAccuracy(layout.game.size.width / layout.game.size.height, 16.0 / 9.0, 0.001);
@@ -216,14 +218,14 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
 
 - (void)testLandscapeUsesOverlayExceptForPartiallyOpenNativeDivision {
     CGRect bounds = CGRectMake(0, 0, 844, 390);
-    DmLayout overlay = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull);
+    DmLayout overlay = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9);
     XCTAssertFalse(overlay.separated);
     XCTAssertTrue(CGRectEqualToRect(overlay.controls, bounds));
-    XCTAssertTrue(CGRectEqualToRect(overlay.game, dm_aspect_fit(bounds)));
-    XCTAssertFalse(dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectMake(0, 180, 844, 24)).separated,
+    XCTAssertTrue(CGRectEqualToRect(overlay.game, dm_aspect_fit(bounds, DM_PICTURE_16_9)));
+    XCTAssertFalse(dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectMake(0, 180, 844, 24), DM_PICTURE_16_9).separated,
                    @"A fully-open landscape display retains the overlay layout");
     CGRect division = CGRectMake(0, 180, 844, 24);
-    DmLayout separated = dm_layout(bounds, UIEdgeInsetsZero, YES, division);
+    DmLayout separated = dm_layout(bounds, UIEdgeInsetsZero, YES, division, DM_PICTURE_16_9);
     XCTAssertTrue(separated.separated,
                   @"A landscape split still requires a partially-open hinge and a valid native division");
     XCTAssertEqualWithAccuracy(CGRectGetMaxY(separated.game), 180, 1);
@@ -233,7 +235,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
 }
 
 - (void)testPortraitWithoutHingeStatusStillSplitsVideoAboveControls {
-    DmLayout layout = dm_layout(CGRectMake(0, 0, 390, 844), UIEdgeInsetsMake(59, 0, 34, 0), NO, CGRectNull);
+    DmLayout layout = dm_layout(CGRectMake(0, 0, 390, 844), UIEdgeInsetsMake(59, 0, 34, 0), NO, CGRectNull, DM_PICTURE_16_9);
     XCTAssertTrue(layout.separated);
     XCTAssertTrue(CGRectEqualToRect(layout.controls, CGRectMake(0, 422, 390, 422)));
     XCTAssertLessThanOrEqual(CGRectGetMaxY(layout.game), CGRectGetMinY(layout.controls));
@@ -361,9 +363,9 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
 
 - (void)testLandscapeControlAnchorsAndMultitouchKeepTheirExistingLayout {
     CGRect bounds = CGRectMake(0, 0, 844, 390);
-    DmLayout layout = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull);
+    DmLayout layout = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9);
     XCTAssertFalse(layout.separated, @"Landscape keeps the overlay layout");
-    XCTAssertTrue(CGRectEqualToRect(layout.game, dm_aspect_fit(bounds)));
+    XCTAssertTrue(CGRectEqualToRect(layout.game, dm_aspect_fit(bounds, DM_PICTURE_16_9)));
     UIView *pad = [self padForLayout:layout bounds:bounds];
     CGFloat u = MIN(bounds.size.height / 430.0, 1.3);
     CGRect stickRing = [self largestShapePathBoundsInLayer:pad.layer];
@@ -391,6 +393,105 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     input = duo_harness_input();
     XCTAssertEqual(input.buttons, 0);
     XCTAssertEqual(input.touch_count, 0);
+}
+
+- (void)testPictureFillCoversTheLandscapeViewWithoutStretching {
+    XCTAssertTrue(dm_picture_fill("fill"));
+    XCTAssertFalse(dm_picture_fill("fit"));
+    XCTAssertFalse(dm_picture_fill(NULL), @"Unset keeps Fit, today's picture");
+    XCTAssertFalse(dm_picture_fill(""));
+    const CGRect sizes[] = {CGRectMake(0, 0, 844, 390), CGRectMake(0, 0, 932, 430), CGRectMake(0, 0, 1024, 768), CGRectMake(0, 0, 1280, 720)};
+    for (NSUInteger i = 0; i < 4; i++) {
+        CGRect bounds = sizes[i];
+        DmLayout fit = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9);
+        DmLayout fill = dm_layout_picture(fit, bounds, YES, DM_PICTURE_16_9);
+        XCTAssertTrue(CGRectEqualToRect(dm_layout_picture(fit, bounds, NO, DM_PICTURE_16_9).game, fit.game), @"Fit leaves the layout as it was");
+        XCTAssertFalse(fill.separated);
+        XCTAssertTrue(CGRectEqualToRect(fill.controls, bounds), @"The touch controls keep the full view");
+        XCTAssertEqualWithAccuracy(fill.game.size.width / fill.game.size.height, 16.0 / 9.0, 0.0001, @"Fill scales, never stretches");
+        XCTAssertTrue(CGRectContainsRect(CGRectInset(fill.game, -0.001, -0.001), bounds), @"Fill covers the whole view");
+        XCTAssertEqualWithAccuracy(CGRectGetMidX(fill.game), CGRectGetMidX(bounds), 0.001);
+        XCTAssertEqualWithAccuracy(CGRectGetMidY(fill.game), CGRectGetMidY(bounds), 0.001);
+        XCTAssertTrue(fill.game.size.width == bounds.size.width || fill.game.size.height == bounds.size.height,
+                      @"The smallest cover: one side matches the view");
+    }
+    CGRect wide = dm_aspect_fill(CGRectMake(0, 0, 844, 390), DM_PICTURE_16_9);
+    XCTAssertEqualWithAccuracy(wide.size.height, 474.75, 0.001);
+    XCTAssertEqualWithAccuracy(CGRectGetMinY(wide), -42.375, 0.001, @"A wide iPhone crops the top and the bottom");
+    CGRect pad = dm_aspect_fill(CGRectMake(0, 0, 1024, 768), DM_PICTURE_16_9);
+    XCTAssertEqualWithAccuracy(CGRectGetMinX(pad), -170.667, 0.001, @"A 4:3 iPad crops the sides");
+    XCTAssertTrue(CGRectIsEmpty(dm_aspect_fill(CGRectZero, DM_PICTURE_16_9)));
+}
+
+- (void)testPictureFillKeepsPortraitAndTabletopSplitsFitted {
+    CGRect portrait = CGRectMake(0, 0, 390, 844);
+    DmLayout split = dm_layout(portrait, UIEdgeInsetsMake(59, 0, 34, 0), NO, CGRectNull, DM_PICTURE_16_9);
+    DmLayout filled = dm_layout_picture(split, portrait, YES, DM_PICTURE_16_9);
+    XCTAssertTrue(filled.separated);
+    XCTAssertTrue(CGRectEqualToRect(filled.game, split.game), @"Portrait keeps the picture fitted above the controls");
+    CGRect landscape = CGRectMake(0, 0, 844, 390);
+    DmLayout tabletop = dm_layout(landscape, UIEdgeInsetsZero, YES, CGRectMake(0, 180, 844, 24), DM_PICTURE_16_9);
+    XCTAssertTrue(tabletop.separated);
+    XCTAssertTrue(CGRectEqualToRect(dm_layout_picture(tabletop, landscape, YES, DM_PICTURE_16_9).game, tabletop.game), @"Tabletop keeps the picture fitted in its half");
+}
+
+- (void)testPictureFillTouchesFollowTheCroppedPicture {
+    CGRect bounds = CGRectMake(0, 0, 844, 390);
+    DmLayout layout = dm_layout_picture(dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9), bounds, YES, DM_PICTURE_16_9);
+    CGPoint top = dm_game_touch_point(layout.game, CGPointMake(422, 0));
+    XCTAssertEqualWithAccuracy(top.x, 0.5, 0.001);
+    XCTAssertEqualWithAccuracy(top.y, 42.375 / 474.75, 0.001, @"The view's top edge is below the cropped top of the picture");
+    CGPoint bottom = dm_game_touch_point(layout.game, CGPointMake(0, 390));
+    XCTAssertEqualWithAccuracy(bottom.x, 0, 0.001);
+    XCTAssertEqualWithAccuracy(bottom.y, (390 + 42.375) / 474.75, 0.001);
+    CGPoint outside = dm_game_touch_point(layout.game, CGPointMake(-50, 900));
+    XCTAssertEqualWithAccuracy(outside.x, 0, 0.0001);
+    XCTAssertEqualWithAccuracy(outside.y, 0.999, 0.0001);
+
+    UIView *pad = [self padForLayout:layout bounds:bounds];
+    DuoFakeTouch *game = [self touchAt:CGPointMake(300, 150) time:1];
+    [self beginTouches:@[game] onPad:pad];
+    DuoHarnessInput input = duo_harness_input();
+    XCTAssertEqual(input.touch_count, 1, @"A touch on no control goes to the game");
+    XCTAssertEqualWithAccuracy(input.touches[0].x, 300 / 844.0, 0.001);
+    XCTAssertEqualWithAccuracy(input.touches[0].y, (150 + 42.375) / 474.75, 0.001, @"Normalized on the scaled picture, not the view");
+    [self endTouches:@[game] onPad:pad cancelled:NO];
+    XCTAssertEqual(duo_harness_input().touch_count, 0);
+}
+
+- (void)testTallerPictureFillsAScreenOfItsShape {
+    // DM_SCREEN_ASPECT=1.43: the game presents 1920x1344, and an unfolded iPhone Duo's landscape view has that shape
+    CGFloat tall = 1920.0 / 1344.0;
+    CGRect bounds = CGRectMake(0, 0, 1000, 700);
+    DmLayout fit = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, tall);
+    XCTAssertTrue(CGRectEqualToRect(fit.game, bounds), @"Fit fills the screen with the picture of its shape: %@", NSStringFromCGRect(fit.game));
+    XCTAssertTrue(CGRectEqualToRect(dm_layout_picture(fit, bounds, YES, tall).game, bounds), @"Fill crops nothing");
+    XCTAssertEqualWithAccuracy(dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9).game.size.height, 562.5, 0.001, @"A 16:9 picture leaves bars");
+    CGPoint top = dm_game_touch_point(fit.game, CGPointMake(500, 0));
+    XCTAssertEqualWithAccuracy(top.y, 0, 0.0001, @"The view's top edge is the picture's top edge");
+    CGRect phone = CGRectMake(0, 0, 844, 390);
+    CGRect wide = dm_layout(phone, UIEdgeInsetsZero, NO, CGRectNull, tall).game;
+    XCTAssertEqualWithAccuracy(wide.size.height, 390, 0.001, @"A wider screen fits the taller picture by its height");
+    XCTAssertEqualWithAccuracy(wide.size.width / wide.size.height, tall, 0.01, @"Never stretched");
+}
+
+- (void)testProductionRootFollowsThePresentedPictureShape {
+    UIViewController *root = [self harnessRootViewController];
+    UIView *game = [root valueForKey:@"game"];
+    front_picture_shape(1920, 1344);
+    XCTestExpectation *applied = [self expectationWithDescription:@"shape applied"];
+    dispatch_async(dispatch_get_main_queue(), ^{ [applied fulfill]; });
+    [self waitForExpectations:@[applied] timeout:2];
+    [root.view layoutIfNeeded];
+    BOOL portrait = root.view.bounds.size.height > root.view.bounds.size.width;
+    XCTAssertEqualWithAccuracy(game.frame.size.width / game.frame.size.height, 1920.0 / 1344.0, 0.01, @"The game's view takes the presented shape: %@", NSStringFromCGRect(game.frame));
+    if (!portrait) XCTAssertEqualWithAccuracy(game.frame.size.height, root.view.bounds.size.height, 1.0);
+    front_picture_shape(1920, 1080);   // back to 16:9 for the other tests
+    XCTestExpectation *restored = [self expectationWithDescription:@"16:9 restored"];
+    dispatch_async(dispatch_get_main_queue(), ^{ [restored fulfill]; });
+    [self waitForExpectations:@[restored] timeout:2];
+    [root.view layoutIfNeeded];
+    XCTAssertEqualWithAccuracy(game.frame.size.width / game.frame.size.height, 16.0 / 9.0, 0.01);
 }
 
 - (void)testSmallSeparatedHitTargetsMeetMinimumsWithoutGrowingArtwork {
@@ -440,16 +541,11 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
         [self assertButton:menuBits[i] at:probe onPad:pad time:30 + i];
     }
 
-    CGPoint swapCenter = [self controlCenterNamed:@"3D" inPad:pad];
-    CGPoint swapProbe = CGPointMake(swapCenter.x, swapCenter.y + 13.7);
-    CGRect swapArtwork = [self controlPathBoundsNamed:@"3D" inPad:pad];
-    XCTAssertLessThan(swapArtwork.size.width, 28);
-    XCTAssertFalse([self controlNamed:@"3D" containsPoint:swapProbe inPad:pad]);
-    DuoFakeTouch *swap = [self touchAt:swapProbe time:33];
-    [self beginTouches:@[swap] onPad:pad];
-    [self endTouches:@[swap] onPad:pad cancelled:NO];
-    XCTAssertNotNil([self textLayerNamed:@"Tap" inLayer:pad.layer], @"The 28 pt switch target should respond outside its drawn circle");
-    XCTAssertEqualWithAccuracy([self controlPathBoundsNamed:@"Tap" inPad:pad].size.width, swapArtwork.size.width, 0.001);
+    UIButton *menu = [self menuButtonInPad:pad];
+    CGPoint menuProbe = CGPointMake(menu.center.x, menu.center.y + 13.7);
+    XCTAssertLessThan(menu.bounds.size.width, 28);
+    XCTAssertFalse(CGRectContainsPoint(menu.frame, menuProbe), @"The menu button's artwork keeps its scaled size");
+    XCTAssertEqual([pad hitTest:menuProbe withEvent:nil], menu, @"Its 44 pt target answers outside the drawn circle");
 }
 
 - (void)testExpandedTargetsRemainReachableWithinSafeAreaInNarrowSeparated {
@@ -494,11 +590,8 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     XCTAssertEqual(duo_harness_input().buttons, DM_BTN_ZL);
     [self endTouches:@[left] onPad:pad cancelled:NO];
 
-    CGPoint swap = [self controlCenterNamed:@"3D" inPad:pad];
-    DuoFakeTouch *top = [self touchAt:CGPointMake(swap.x, CGRectGetMinY(controls) + 0.8) time:4];
-    [self beginTouches:@[top] onPad:pad];
-    [self endTouches:@[top] onPad:pad cancelled:NO];
-    XCTAssertNotNil([self textLayerNamed:@"Tap" inLayer:pad.layer], @"The 28 pt switch target should remain reachable at the safe top edge");
+    UIButton *menu = [self menuButtonInPad:pad];
+    XCTAssertEqual([pad hitTest:CGPointMake(menu.center.x, CGRectGetMinY(controls) + 0.8) withEvent:nil], menu, @"The menu button stays reachable at the safe top edge");
 }
 
 - (void)testFaceTargetsKeepTheirMultiButtonSlideBehavior {
@@ -538,35 +631,112 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     XCTAssertEqual(duo_harness_input().buttons, 0);
 }
 
-- (void)testSwapAndMenuOverlapUseNearestHitTargetThenKeepOwnership {
+- (void)testMenuButtonAndMinusOverlapUseNearestTargetThenKeepOwnership {
     CGRect bounds = CGRectMake(0, 0, 390, 844);
     UIView *pad = [self padForLayout:[self separatedLayout:bounds] bounds:bounds];
     CGPoint minus = [self controlCenterNamed:@"−" inPad:pad];
-    CGPoint swap = [self controlCenterNamed:@"3D" inPad:pad];
-
-    // This point lies in both enlarged targets but is nearer to minus after normalization.
-    CGPoint nearerToMinus = CGPointMake(minus.x + 16, minus.y);
-    DuoFakeTouch *minusTouch = [self touchAt:nearerToMinus time:1];
+    UIButton *menu = [self menuButtonInPad:pad];
+    CGPoint m = menu.center;
+    XCTAssertEqual([pad hitTest:minus withEvent:nil], pad, @"− at its own centre belongs to the pad");
+    XCTAssertEqual([pad hitTest:m withEvent:nil], menu);
+    UIView *last = pad; int flips = 0;
+    for (int i = 0; i <= 40; i++) {   // from − to the menu button: the nearer normalized target wins, so the owner changes once
+        CGPoint p = CGPointMake(minus.x + (m.x - minus.x) * i / 40.0, minus.y + (m.y - minus.y) * i / 40.0);
+        UIView *v = [pad hitTest:p withEvent:nil];
+        if (v != last) { flips++; last = v; }
+    }
+    XCTAssertEqual(flips, 1);
+    DuoFakeTouch *minusTouch = [self touchAt:minus time:1];
     [self beginTouches:@[minusTouch] onPad:pad];
-    XCTAssertEqual(duo_harness_input().buttons, DM_BTN_MINUS);
-    [self moveTouch:minusTouch to:swap onPad:pad];
-    XCTAssertEqual(duo_harness_input().buttons, DM_BTN_MINUS);
+    [self moveTouch:minusTouch to:m onPad:pad];
+    XCTAssertEqual(duo_harness_input().buttons, DM_BTN_MINUS, @"A − touch slid onto the menu button stays −");
     [self endTouches:@[minusTouch] onPad:pad cancelled:NO];
-    XCTAssertNotNil([self textLayerNamed:@"3D" inLayer:pad.layer]);
-
-    // This point is in both targets but is nearer to the layout switch. Releasing there switches layout.
-    CGPoint nearerToSwap = CGPointMake(minus.x + 17.5, minus.y);
-    DuoFakeTouch *swapTouch = [self touchAt:nearerToSwap time:2];
-    [self beginTouches:@[swapTouch] onPad:pad];
     XCTAssertEqual(duo_harness_input().buttons, 0);
-    [self endTouches:@[swapTouch] onPad:pad cancelled:NO];
-    XCTAssertNotNil([self textLayerNamed:@"Tap" inLayer:pad.layer]);
+}
+
+- (void)testMenuLayoutPickReleasesHeldKeysAndIsSaved {
+    dm_set_opmode(0);
+    CGRect bounds = CGRectMake(0, 0, 844, 390);
+    DmLayout layout = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9);
+    UIView *pad = [self padForLayout:layout bounds:bounds];
+    dm_pad_layout_set(0);
+    DuoFakeTouch *a = [self touchAt:[self faceAIn:layout bounds:bounds] time:1];
+    [self beginTouches:@[a] onPad:pad];
+    XCTAssertEqual(duo_harness_input().buttons, DM_BTN_A);
+    dm_pad_layout_set(1);
+    XCTAssertEqual(duo_harness_input().buttons, 0, @"Picking a layout releases every held key");
+    XCTAssertEqual(dm_pad_layout(), 1);
+    XCTAssertEqualObjects([NSUserDefaults.standardUserDefaults objectForKey:@"DmPadLayout"], @1, @"and is kept for the next start");
+    XCTAssertFalse([self textLayerNamed:@"L3" inLayer:pad.layer].superlayer.hidden, @"the 3D layout's keys show");
+    dm_pad_layout_set(2);
+    UIButton *menu = [self menuButtonInPad:pad];
+    XCTAssertFalse(menu.hidden);
+    XCTAssertEqual([pad hitTest:menu.center withEvent:nil], menu, @"Tap keeps the menu button, so the menu is still reachable");
+    [self endTouches:@[a] onPad:pad cancelled:YES];
+}
+
+- (void)testDockingDropsTheTapLayout {
+    dm_set_opmode(0);
+    CGRect bounds = CGRectMake(0, 0, 844, 390);
+    [self padForLayout:dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9) bounds:bounds];
+    dm_pad_layout_set(2);
+    XCTAssertEqual(dm_pad_layout(), 2);
+    dm_set_opmode(1); dm_gamepad_opmode_changed();
+    XCTAssertEqual(dm_pad_layout(), 0, @"Docked, the game reads no touch screen: Tap goes");
+    XCTAssertFalse(dm_pad_layout_offered(2));
+    dm_pad_layout_set(2);
+    XCTAssertEqual(dm_pad_layout(), 0, @"Tap cannot be picked while docked");
+    XCTAssertEqualObjects([NSUserDefaults.standardUserDefaults objectForKey:@"DmPadLayout"], @0);
+    dm_set_opmode(0);
+}
+
+- (void)testInGameMenuSettingsTakeEffectAtOnce {
+    UIViewController *root = [self harnessRootViewController];
+    XCTAssertNotNil(root);
+    [root.view layoutIfNeeded];
+    UIView *game = [root valueForKey:@"game"];
+    XCTAssertTrue(dm_setting_live("DM_PICTURE_FIT", NULL) && dm_setting_live("DM_OPMODE", NULL) && dm_setting_live("DM_RUMBLE", NULL)
+                  && dm_setting_live("DM_SHOW_FPS", NULL) && dm_setting_live("DM_TOUCH_HAPTICS", NULL));
+    XCTAssertFalse(dm_setting_live("DM_LANG", NULL), @"A setting the game reads once at start is not offered");
+    XCTAssertFalse(dm_setting_live("DM_FPS_TARGET", NULL));
+
+    CGRect b = root.view.bounds;
+    BOOL duo = [[root valueForKey:@"hingeStatus"] integerValue] != 0;
+    DmLayout fit = dm_layout(b, dm_game_safe_insets(b, root.view.safeAreaInsets, duo), [[root valueForKey:@"partiallyOpen"] boolValue], CGRectNull, DM_PICTURE_16_9);
+    dm_setting_live("DM_PICTURE_FIT", "fill"); [root.view layoutIfNeeded];
+    XCTAssertTrue(CGRectEqualToRect(game.frame, dm_layout_picture(fit, b, YES, DM_PICTURE_16_9).game), @"Fill applies at once: %@", NSStringFromCGRect(game.frame));
+    dm_setting_live("DM_PICTURE_FIT", "fit"); [root.view layoutIfNeeded];
+    XCTAssertTrue(CGRectEqualToRect(game.frame, fit.game), @"and Fit brings the bars back: %@", NSStringFromCGRect(game.frame));
+
+    dm_setting_live("DM_RUMBLE", "0"); XCTAssertEqual(duo_harness_rumble(), 0);
+    dm_setting_live("DM_RUMBLE", "1"); XCTAssertEqual(duo_harness_rumble(), 1);
+    dm_setting_live("DM_OPMODE", "1"); XCTAssertEqual(dm_opmode(), 1);
+    dm_setting_live("DM_OPMODE", "0"); XCTAssertEqual(dm_opmode(), 0);
+    dm_setting_live("DM_SHOW_FPS", "1");
+    UILabel *fps = [root valueForKey:@"fps"];
+    XCTAssertNotNil(fps); XCTAssertFalse(fps.hidden);
+    dm_setting_live("DM_SHOW_FPS", "0"); XCTAssertTrue(fps.hidden);
+}
+
+- (void)testGameViewDrawableHonoursAPixelCap {
+    UIViewController *root = [self harnessRootViewController];
+    [root.view layoutIfNeeded];
+    UIView *game = [root valueForKey:@"game"];
+    CAMetalLayer *metal = (CAMetalLayer *)game.layer;
+    CGFloat full = metal.drawableSize.width;
+    XCTAssertGreaterThan(full, 300);
+    [game setValue:@300 forKey:@"maxPixelWidth"]; [game setNeedsLayout]; [game layoutIfNeeded];
+    XCTAssertEqualWithAccuracy(metal.drawableSize.width, 300, 1, @"A TV's cap survives every later layout pass (DmGameView layoutSubviews)");
+    [game setNeedsLayout]; [game layoutIfNeeded];
+    XCTAssertEqualWithAccuracy(metal.drawableSize.width, 300, 1);
+    [game setValue:@0 forKey:@"maxPixelWidth"]; [game setNeedsLayout]; [game layoutIfNeeded];
+    XCTAssertEqualWithAccuracy(metal.drawableSize.width, full, 1);
 }
 
 - (void)testGamepadTextLayersRefreshScaleFromTheCurrentTraitCollection {
     if (@available(iOS 17.0, *)) {
         CGRect bounds = CGRectMake(0, 0, 844, 390);
-        DmLayout layout = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull);
+        DmLayout layout = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9);
         UIView *pad = [self padForLayout:layout bounds:bounds];
         CATextLayer *face = [self textLayerNamed:@"A" inLayer:pad.layer];
         XCTAssertNotNil(face);
@@ -617,7 +787,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     BOOL partiallyOpen = [[root valueForKey:@"partiallyOpen"] boolValue];
     BOOL duo = [[root valueForKey:@"hingeStatus"] integerValue] != 0 || !CGRectIsNull(division);
     UIEdgeInsets insets = dm_game_safe_insets(root.view.bounds, root.view.safeAreaInsets, duo);
-    DmLayout layout = dm_layout(root.view.bounds, insets, partiallyOpen, division);
+    DmLayout layout = dm_layout(root.view.bounds, insets, partiallyOpen, division, DM_PICTURE_16_9);
     XCTAssertTrue(CGRectEqualToRect(game.frame, layout.game),
                   @"The production game view must use the current scene bounds and native division region: actual %@, expected %@",
                   NSStringFromCGRect(game.frame), NSStringFromCGRect(layout.game));
@@ -675,10 +845,10 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
 - (void)testResizingReleasesHeldInputAndUpdatesVideoTouchCoordinates {
     const CGRect windows[] = {CGRectMake(0, 0, 1024, 768), CGRectMake(0, 0, 320, 480),
                               CGRectMake(0, 0, 640, 360), CGRectMake(0, 0, 500, 500)};
-    UIView *pad = [self padForLayout:dm_layout(windows[0], UIEdgeInsetsZero, NO, CGRectNull) bounds:windows[0]];
+    UIView *pad = [self padForLayout:dm_layout(windows[0], UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9) bounds:windows[0]];
     for (NSUInteger i = 0; i < sizeof windows / sizeof windows[0]; i++) {
         CGRect bounds = windows[i];
-        DmLayout layout = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull);
+        DmLayout layout = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9);
         pad.frame = bounds;
         dm_gamepad_arrange(pad, layout);
         [pad layoutIfNeeded];
@@ -696,7 +866,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
         XCTAssertEqualWithAccuracy(input.touches[0].y, 0.5, 0.001);
         [pad setValue:@NO forKey:@"tap"];
     }
-    dm_gamepad_arrange(pad, dm_layout(windows[0], UIEdgeInsetsZero, NO, CGRectNull));
+    dm_gamepad_arrange(pad, dm_layout(windows[0], UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9));
     XCTAssertEqual(duo_harness_input().touch_count, 0);
 }
 
@@ -707,7 +877,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     XCTAssertTrue(UIEdgeInsetsEqualToEdgeInsets(duo, UIEdgeInsetsMake(54, 0, 0, 0)));
     XCTAssertTrue(UIEdgeInsetsEqualToEdgeInsets(dm_game_safe_insets(portrait, safe, NO), safe));
     XCTAssertTrue(UIEdgeInsetsEqualToEdgeInsets(dm_game_safe_insets(CGRectMake(0, 0, 1133, 744), safe, YES), safe));
-    DmLayout layout = dm_layout(portrait, duo, NO, CGRectNull);
+    DmLayout layout = dm_layout(portrait, duo, NO, CGRectNull, DM_PICTURE_16_9);
     XCTAssertEqual(CGRectGetMinX(layout.controls), 0);
     XCTAssertEqual(CGRectGetMaxX(layout.controls), 744);
     XCTAssertEqual(CGRectGetMaxY(layout.controls), 1133);
@@ -792,7 +962,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
             [root viewDidLayoutSubviews];
             [view setNeedsLayout]; [view layoutIfNeeded];
 
-            DmLayout expected = dm_layout(view.bounds, dm_game_safe_insets(view.bounds, view.safeAreaInsets, YES), YES, region.frame);
+            DmLayout expected = dm_layout(view.bounds, dm_game_safe_insets(view.bounds, view.safeAreaInsets, YES), YES, region.frame, DM_PICTURE_16_9);
             UIView *game = [root valueForKey:@"game"];
             XCTAssertTrue(gDuoHarnessSawIncludeInactiveDivisionQuery,
                           @"The root must query UIKit's IncludeInactive option for the division boundary");
@@ -804,7 +974,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
             hinge.status = UIHingeStatusFullyOpen;
             [(id)root hingeChanged:hinge];
             [root viewDidLayoutSubviews];
-            DmLayout fullyOpen = dm_layout(view.bounds, dm_game_safe_insets(view.bounds, view.safeAreaInsets, YES), NO, region.frame);
+            DmLayout fullyOpen = dm_layout(view.bounds, dm_game_safe_insets(view.bounds, view.safeAreaInsets, YES), NO, region.frame, DM_PICTURE_16_9);
             XCTAssertEqual(fullyOpen.separated, view.bounds.size.height > view.bounds.size.width,
                            @"A fully-open landscape display overlays while portrait remains separated");
             XCTAssertTrue(CGRectEqualToRect(game.frame, fullyOpen.game),
@@ -835,7 +1005,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
 }
 
 - (DmLayout)separatedLayout:(CGRect)bounds {
-    return dm_layout(bounds, UIEdgeInsetsZero, YES, CGRectMake(0, bounds.size.height * 0.48, bounds.size.width, 24));
+    return dm_layout(bounds, UIEdgeInsetsZero, YES, CGRectMake(0, bounds.size.height * 0.48, bounds.size.width, 24), DM_PICTURE_16_9);
 }
 
 - (UIView *)padForLayout:(DmLayout)layout bounds:(CGRect)bounds {
@@ -847,7 +1017,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
 }
 
 - (DmLayout)portraitControlLayoutForBounds:(CGRect)bounds insets:(UIEdgeInsets)insets division:(CGRect)division {
-    DmLayout layout = dm_layout(bounds, insets, NO, division);
+    DmLayout layout = dm_layout(bounds, insets, NO, division, DM_PICTURE_16_9);
     CGRect safe = UIEdgeInsetsInsetRect(bounds, insets);
     CGFloat controlsTop = CGRectGetMinY(layout.controls);
     layout.controls = CGRectMake(CGRectGetMinX(safe), controlsTop, safe.size.width,
@@ -923,6 +1093,12 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
         CATextLayer *found = [self textLayerNamed:name inLayer:child];
         if (found) return found;
     }
+    return nil;
+}
+
+- (UIButton *)menuButtonInPad:(UIView *)pad {
+    for (UIView *v in pad.subviews) if ([v isKindOfClass:UIButton.class] && [v.accessibilityLabel isEqual:@"Menu"]) return (UIButton *)v;
+    XCTFail(@"Expected the gamepad's menu button");
     return nil;
 }
 
@@ -1063,7 +1239,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     XCTAssertNotEqual(duo_harness_input().buttons & DM_BTN_A, 0);
     XCTAssertEqual(duo_harness_input().touch_count, 1);
 
-    dm_gamepad_arrange(pad, dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull));
+    dm_gamepad_arrange(pad, dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9));
     DuoHarnessInput input = duo_harness_input();
     XCTAssertEqual(input.buttons, 0);
     XCTAssertEqual(input.touch_count, 0);
@@ -1074,7 +1250,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     if (@available(iOS 17.0, *)) {
         [self setHarnessControllers:nil notification:nil];
         CGRect bounds = CGRectMake(0, 0, 844, 390);
-        DmLayout layout = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull);
+        DmLayout layout = dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9);
         UIView *pad = [self padForLayout:layout bounds:bounds];
         GCVirtualControllerConfiguration *config = [GCVirtualControllerConfiguration new];
         config.hidden = YES;
@@ -1133,7 +1309,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
         [self setHarnessControllers:@[first, second] notification:GCControllerDidConnectNotification];
 
         CGRect bounds = CGRectMake(0, 0, 844, 390);
-        UIView *pad = [self padForLayout:dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull) bounds:bounds];
+        UIView *pad = [self padForLayout:dm_layout(bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9) bounds:bounds];
         [self deliverSnapshotChangeFor:first button:first.extendedGamepad.buttonB value:1];
         [self deliverSnapshotChangeFor:second button:second.extendedGamepad.buttonA value:1];
         DuoHarnessState state = duo_harness_state();

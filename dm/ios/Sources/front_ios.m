@@ -1,7 +1,9 @@
-// iOS front end (the iOS implementation of front.h): portrait puts 16:9 video above the gamepad; native horizontal folds set the separation when available.
-// With a TV connected the Metal view is on the TV and the phone shows the pad (DmTVSceneDelegate), unless the player keeps the picture on the device (DM_TV_MIRROR).
+// iOS front end (the iOS implementation of front.h): a Metal view of the picture's shape (16:9, or what the game presents: front_picture_shape) + a full-screen virtual gamepad layer (DmGamepad.m). Where they go is DmLayout.h's: in landscape the picture
+// is centered (black bars) and the controls are drawn over it; in portrait, or on an iPhone Duo half folded, the picture sits above the controls. With a TV connected the Metal view
+// is on the TV and the phone shows the pad (DmTVSceneDelegate), unless the player keeps the picture on the device (DM_TV_MIRROR).
 // The host runs on the big-stack thread started by main.m; front_run runs the guest directly on the calling thread.
 #import <UIKit/UIKit.h>
+#import <UserNotifications/UserNotifications.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
 #import <AVFAudio/AVFAudio.h>
@@ -15,6 +17,7 @@
 
 void dm_gamepad_active(void);
 #import "DmLayout.h"
+#import "DmGameMenu.h"
 
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
@@ -23,11 +26,14 @@ const char *front_ios_device_check(void);   // main.m: why this device cannot ru
 bool dm_show_launcher(void *view_controller, void (*done)(void));   // Launcher.swift: false = no launcher (no dm/launcher.json, or DM_LAUNCHER=0)
 
 static CAMetalLayer *g_layer;
+static void front_ios_notify_setup(void);
+static void front_ios_notify_ask(void);
 static void front_ios_power_watch(void);
 static void front_ios_audio_watch(void);
 static UILabel *front_ios_fps_label(void);
 
 @interface DmGameView : UIView
+@property (nonatomic) CGFloat maxPixelWidth;   // 0: the screen's own pixels; a TV caps the drawable at 1920 across (tv_attach)
 @end
 @implementation DmGameView
 + (Class)layerClass { return CAMetalLayer.class; }
@@ -43,25 +49,17 @@ static UILabel *front_ios_fps_label(void);
     }
     return self;
 }
-- (void)didMoveToWindow {   // the phone's screen or a TV's (DmTVSceneDelegate): render at that screen's pixels
-    [super didMoveToWindow];
-    UIScreen *s = self.window.windowScene.screen; if (!s) return;
-    self.layer.contentsScale = s.nativeScale; [self setNeedsLayout];
-}
-- (void)layoutSubviews {
+- (void)didMoveToWindow { [super didMoveToWindow]; [self setNeedsLayout]; }   // the phone's screen or a TV's (DmTVSceneDelegate)
+- (void)layoutSubviews {   // render at the pixels of the screen the view is on (an iPad window can move to another), at most maxPixelWidth across
     [super layoutSubviews];
     CAMetalLayer *l = (CAMetalLayer *)self.layer;
     UIScreen *screen = self.window.windowScene.screen;
-    // Preserve native-pixel gameplay; UIKit text uses the view's displayScale.
-    l.contentsScale = screen ? screen.nativeScale : MAX(self.traitCollection.displayScale, 1);
+    CGFloat scale = screen ? screen.nativeScale : MAX(self.traitCollection.displayScale, 1);
+    if (self.maxPixelWidth > 0) scale = MIN(scale, self.maxPixelWidth / MAX(self.bounds.size.width, 1));
+    l.contentsScale = scale;
     l.drawableSize = CGSizeMake(self.bounds.size.width * l.contentsScale, self.bounds.size.height * l.contentsScale);
 }
 @end
-static CGRect fit_16_9(CGRect b) {   // the largest centered 16:9 rectangle in b
-    CGFloat w = b.size.width, h = b.size.height;
-    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
-    return CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
-}
 static void tv_game_started(void);
 
 @interface DmRootView : UIView
@@ -85,17 +83,19 @@ static void tv_game_started(void);
 @property (nonatomic, strong) UIView *pad;
 @property (nonatomic, strong) UILabel *fps;
 @property (nonatomic) BOOL launched;
-@property (nonatomic) BOOL partiallyOpen;
+@property (nonatomic, strong) id tv;   // the TV scene accessory's registration (iOS 27)
+@property (nonatomic) BOOL fill;   // DM_PICTURE_FIT=fill: in landscape the picture covers the screen, its edges cropped (DmLayout.h dm_layout_picture)
+@property (nonatomic) BOOL partiallyOpen;   // an iPhone Duo's hinge half open (UIHingeInteraction, iOS 27.1)
 @property (nonatomic) NSInteger hingeStatus;
-@property (nonatomic) BOOL separated;
-@property (nonatomic, copy) NSString *layoutLog;
+@property (nonatomic, copy) NSString *layoutLog;   // the last layout line logged
 #if __has_include(<UIKit/UIHingeInteraction.h>)
 - (void)hingeChanged:(UIHinge *)hinge API_AVAILABLE(ios(27.1));
 #endif
-@property (nonatomic, strong) id tv;   // the TV scene accessory's registration (iOS 27)
 - (void)startGame;
+- (void)showFPS:(BOOL)on;
 @end
 static DmRootVC *g_root;
+static CGFloat g_picture_aspect = DM_PICTURE_16_9;   // the presented picture's width / height (front_picture_shape); main thread
 static void launcher_done(void) { [g_root startGame]; }
 @implementation DmRootVC
 - (void)loadView { self.view = [DmRootView new]; }
@@ -117,6 +117,7 @@ static void launcher_done(void) { [g_root startGame]; }
     }
 #endif
     front_ios_power_watch();
+    front_ios_notify_setup();
     if (!front_ios_boot_ok()) {   // No game files: show a hint and do not start the host
         const char *why = front_ios_boot_message();
         [self showHint:why ? [NSString stringWithFormat:@"Game files unusable.\n%s", why] : @"Game files not found.\nPut the RomFS folder into this App's Documents as \"romfs\" (Files app), then restart."]; return;
@@ -146,11 +147,14 @@ static void launcher_done(void) { [g_root startGame]; }
 - (void)startGame {
     if (self.game) return;
     dm_cloud_saves_env();   // DM_SAVE_SYNC from the launcher's Cloud saves pick, before the game's first save mount reads it (CloudSaves.m, save_sync.h)
-    g_root = self;
     front_hud_env();   // before the process's first Metal device, which reads MTL_HUD_ENABLED (an env file's DM_METAL_HUD sets it in main.m already; GitHub issue #840)
     const char *dev = front_ios_device_check();   // that first device: a GPU without BC textures is refused here, not at launch, so the launcher's HUD switch counts
     if (dev) { [self showHint:[NSString stringWithFormat:@"This device is not supported.\n%s", dev]]; return; }   // the host does not start
-    self.game =[[DmGameView alloc] initWithFrame:self.view.bounds];
+    self.fill = dm_picture_fill(getenv("DM_PICTURE_FIT"));
+    if (self.fill) LOG("front end: picture Fill (DM_PICTURE_FIT=fill), the 16:9 picture covers the screen in landscape and its edges are cropped");
+    self.view.clipsToBounds = YES;   // with Fill the game view is larger than the screen
+    self.view.window.traitOverrides.preferredContentSizeCategory = UIContentSizeCategorySmall;   // UIKit draws the in-game menu (GameMenu.swift) in this window: it keeps one compact text size over the game, whatever the system's text size
+    self.game = [[DmGameView alloc] initWithFrame:self.view.bounds];
     [self.view addSubview:self.game];
     g_layer = (CAMetalLayer *)self.game.layer;
     if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) { g_layer.developerHUDProperties = @{@"mode": @"default"}; LOG("front end: Metal performance HUD on (DM_METAL_HUD)"); }   // Apple's HUD over the game: frame rate, frame and GPU time, memory
@@ -158,8 +162,8 @@ static void launcher_done(void) { [g_root startGame]; }
     self.pad = dm_gamepad_view(self.view.bounds);
     self.pad.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.pad];
-    self.fps = front_ios_fps_label();   // above the pad, which hides while a controller is connected
-    if (self.fps) [self.view addSubview:self.fps];
+    const char *fps = getenv("DM_SHOW_FPS");
+    [self showFPS:fps ? atoi(fps) != 0 : [[NSBundle.mainBundle objectForInfoDictionaryKey:@"DMShowFPS"] boolValue]];
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     tv_game_started();   // a TV connected while the launcher showed
@@ -168,7 +172,7 @@ static void launcher_done(void) { [g_root startGame]; }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; if (!self.game) return;
-    CGRect division = CGRectNull;
+    CGRect division = CGRectNull;   // an iPhone Duo's fold, as UIKit reports it (iOS 27.1)
     NSMutableArray<NSString *> *regionLog = [NSMutableArray array];
 #if __has_include(<UIKit/UIHingeInteraction.h>)
     if (@available(iOS 27.1, *)) {
@@ -181,26 +185,24 @@ static void launcher_done(void) { [g_root startGame]; }
 #endif
     BOOL duoPortrait = b.size.height > b.size.width && (self.hingeStatus != 0 || !CGRectIsNull(division));
     UIEdgeInsets gameInsets = dm_game_safe_insets(b, self.view.safeAreaInsets, duoPortrait);
-    DmLayout layout = dm_layout(b, gameInsets, self.partiallyOpen, division);
-    if (self.game.superview == self.view) self.game.frame = layout.game;   // on a TV the TV's view lays it out
+    BOOL onTV = self.game.superview != self.view;   // the TV's view lays the picture out; the phone is all pad
+    DmLayout layout = onTV ? dm_layout_pad_only(b) : dm_layout_picture(dm_layout(b, gameInsets, self.partiallyOpen, division, g_picture_aspect), b, self.fill, g_picture_aspect);
+    if (!onTV) self.game.frame = layout.game;
     layout.topSafeOnly = duoPortrait;
-    UIInterfaceOrientationMask appMask = [UIApplication.sharedApplication supportedInterfaceOrientationsForWindow:self.view.window];
-    NSString *summary = [NSString stringWithFormat:@"bounds %@, orientation %ld, scene locked %d, root mask %#lx, app mask %#lx, hinge %ld, partial %d, divisions %@, mode %@", NSStringFromCGRect(b), (long)self.view.window.windowScene.effectiveGeometry.interfaceOrientation, self.view.window.windowScene.effectiveGeometry.isInterfaceOrientationLocked, (unsigned long)self.supportedInterfaceOrientations, (unsigned long)appMask, (long)self.hingeStatus, self.partiallyOpen, regionLog, layout.separated ? @"split" : @"overlay"];
-    if (![summary isEqualToString:self.layoutLog]) {
-        self.layoutLog = summary;
-        LOG("front end: Duo layout %s", summary.UTF8String);
-    }
-    if (layout.separated != self.separated) {
-        self.separated = layout.separated;
-        LOG("front end: Duo %s, video %s, controls %s", layout.separated ? "split" : "overlay", NSStringFromCGRect(layout.game).UTF8String, NSStringFromCGRect(layout.controls).UTF8String);
-    }
+    NSString *line = [NSString stringWithFormat:@"%@, hinge %ld%s, divisions %@, picture %@, controls %@", onTV ? @"pad only (picture on the TV)" : layout.separated ? @"split" : self.fill ? @"overlay, Fill" : @"overlay",
+                      (long)self.hingeStatus, self.partiallyOpen ? " (half open)" : "", regionLog, NSStringFromCGRect(layout.game), NSStringFromCGRect(layout.controls)];
+    if (![line isEqualToString:self.layoutLog]) { self.layoutLog = line; LOG("front end: layout %s", line.UTF8String); }
     self.pad.frame = b;
     dm_gamepad_arrange(self.pad, layout);
-    if (self.fps) {
+    if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
         CGRect s = CGRectIntersection(layout.controls, UIEdgeInsetsInsetRect(b, gameInsets));
         CGFloat u = layout.separated ? MIN(MIN(s.size.height / 430.0, s.size.width / 700.0), 1.3) : MIN(b.size.height / 430.0, 1.3);
         self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
     }
+}
+- (void)showFPS:(BOOL)on {   // the frame-rate counter: DM_SHOW_FPS at Play, then the in-game menu
+    if (on && !self.fps) { self.fps = front_ios_fps_label(); [self.view addSubview:self.fps]; [self.view setNeedsLayout]; }   // above the pad, which hides while a controller is connected
+    self.fps.hidden = !on;
 }
 - (void)viewDidAppear:(BOOL)a {
     [super viewDidAppear:a];
@@ -212,6 +214,7 @@ static void launcher_done(void) { [g_root startGame]; }
     if (self.launched || !front_ios_boot_ok()) return;
     self.launched = YES; g_root = self;
     if (!dm_show_launcher((__bridge void *)self, launcher_done)) [self startGame];   // the settings screen first (Launcher.swift), when the app has one
+    front_ios_notify_ask();
 }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }   // Edge gestures need two swipes, to avoid accidental exits
@@ -226,19 +229,19 @@ UIViewController *front_ios_root(void) { return [DmRootVC new]; }
 @end
 @implementation DmTVVC
 - (void)viewDidLoad { [super viewDidLoad]; self.view.backgroundColor = UIColor.blackColor; }
-- (void)viewDidLayoutSubviews { [super viewDidLayoutSubviews]; for (UIView *v in self.view.subviews) v.frame = fit_16_9(self.view.bounds); }
+- (void)viewDidLayoutSubviews { [super viewDidLayoutSubviews]; for (UIView *v in self.view.subviews) v.frame = dm_aspect_fit(self.view.bounds, g_picture_aspect); }
 @end
 static UIWindow *g_tv; static int g_tv_mode_was = -1;
 static void tv_attach(void) {
     DmGameView *v = g_root.game; if (!g_tv || !v || v.superview == g_tv.rootViewController.view) return;
-    [g_tv.rootViewController.view addSubview:v]; [g_tv.rootViewController.view setNeedsLayout];
     // at most 1080p: the game renders 1080p docked, and a 4K drawable only adds an upscale and a 4K stream (an AirPlay TV showed black, the GPU went from 15 to 60 ms a frame).
-    // Taken from the 16:9 picture, not the screen, so a display of another shape still gets the full 1920 pixels across the picture
-    CGRect f = fit_16_9(g_tv.bounds);
-    v.layer.contentsScale = MIN(v.layer.contentsScale, 1920.0 / MAX(f.size.width, 1)); [v setNeedsLayout];
+    // Taken from the picture, not the screen, so a display of another shape still gets the full 1920 pixels across the picture (DmGameView layoutSubviews applies it)
+    v.maxPixelWidth = 1920;
+    [g_tv.rootViewController.view addSubview:v]; [g_tv.rootViewController.view setNeedsLayout]; [g_root.view setNeedsLayout];   // the phone's pad takes the whole screen
+    CGRect f = dm_aspect_fit(g_tv.bounds, g_picture_aspect); CGFloat scale = MIN(g_tv.windowScene.screen.nativeScale, 1920.0 / MAX(f.size.width, 1));
     if (g_tv_mode_was < 0) g_tv_mode_was = dm_opmode();
-    dm_set_opmode(1);
-    LOG("front end: TV connected (%.0fx%.0f points), the picture moves there at %.0fx%.0f, console mode", g_tv.bounds.size.width, g_tv.bounds.size.height, f.size.width * v.layer.contentsScale, f.size.height * v.layer.contentsScale);
+    dm_set_opmode(1); dm_gamepad_opmode_changed();
+    LOG("front end: TV connected (%.0fx%.0f points), the picture moves there at %.0fx%.0f, console mode", g_tv.bounds.size.width, g_tv.bounds.size.height, f.size.width * scale, f.size.height * scale);
 }
 // Keep picture on device: the launcher's choice is known only when the game starts, so a TV connected before that has a scene with a window by now. Without a registered accessory (iOS 27) or
 // a visible window (iOS 26) iOS mirrors the phone, so nothing moves and the renderer draws one picture as without a TV
@@ -252,10 +255,41 @@ static void tv_game_started(void) {
     LOG("front end: the picture stays on the device, any TV mirrors it (DM_TV_MIRROR)");
 }
 static void tv_detach(void) {
-    DmGameView *v = g_root.game; g_tv = nil;
+    DmGameView *v = g_root.game; g_tv = nil; v.maxPixelWidth = 0;
     if (v && v.superview != g_root.view) { [g_root.view insertSubview:v atIndex:0]; [g_root.view setNeedsLayout]; }
-    if (g_tv_mode_was >= 0) { dm_set_opmode(g_tv_mode_was); g_tv_mode_was = -1; }
+    if (g_tv_mode_was >= 0) { dm_set_opmode(g_tv_mode_was); g_tv_mode_was = -1; dm_gamepad_opmode_changed(); }
     LOG("front end: TV disconnected, the picture is back on the phone");
+}
+void front_picture_shape(int w, int h) {   // front.h: the views take the presented picture's shape (a taller one under DM_SCREEN_ASPECT) instead of 16:9
+    if (w <= 0 || h <= 0) return;
+    CGFloat a = (CGFloat)w / h;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (a == g_picture_aspect) return;
+        g_picture_aspect = a; LOG("front end: picture shape %dx%d, the game's view follows it", w, h);
+        [g_root.view setNeedsLayout]; if (g_tv) [g_tv.rootViewController.view setNeedsLayout];
+    });
+}
+
+// The settings the in-game menu offers (GameMenu.swift, from the gamepad's menu button), each taking effect while the game runs; the launcher's other settings need the next start.
+// value NULL: only whether env is one of them; otherwise apply it (GameMenu.swift has saved it and put it in the environment). Console mode changes as on a Switch put in or taken out of its
+// dock (the operation mode change notification); while a TV shows the picture the game stays docked, and the choice applies when the TV is unplugged
+bool dm_setting_live(const char *env, const char *value) {
+    if (!env || !g_root.game) return false;
+    if (!strcmp(env, "DM_PICTURE_FIT")) {
+        if (value) { g_root.fill = dm_picture_fill(value); [g_root.view setNeedsLayout]; LOG("front end: picture %s (in-game menu)", g_root.fill ? "Fill" : "Fit"); }
+        return true;
+    }
+    if (!strcmp(env, "DM_OPMODE")) {
+        if (!value) return true;
+        int m = atoi(value) ? 1 : 0;
+        if (g_tv_mode_was >= 0) { g_tv_mode_was = m; LOG("front end: console mode %s once the TV is unplugged (in-game menu)", m ? "docked" : "handheld"); return true; }
+        dm_set_opmode(m); dm_gamepad_opmode_changed(); LOG("front end: console mode %s (in-game menu)", m ? "docked" : "handheld");
+        return true;
+    }
+    if (!strcmp(env, "DM_SHOW_FPS")) { if (value) [g_root showFPS:atoi(value) != 0]; return true; }
+    if (!strcmp(env, "DM_TOUCH_HAPTICS")) { if (value) dm_gamepad_touch_feedback(atoi(value) != 0); return true; }
+    if (!strcmp(env, "DM_RUMBLE")) { if (value) { dm_haptics_set_enabled(atoi(value) != 0); LOG("front end: game rumble %s (in-game menu)", atoi(value) ? "on" : "off"); } return true; }
+    return false;
 }
 @interface DmTVSceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (strong, nonatomic) UIWindow *window;
@@ -288,11 +322,10 @@ static void front_ios_power_watch(void) {
 }
 
 // Frame-rate counter: the frames put on screen in the last second (nvn_mtl.m counts them for NVN and for the Vulkan layer alike; frames the display link merged away are not counted).
-// On when the IPA was built with it (the NSP script's SHOW_FPS / --show-fps → DMShowFPS in Info.plist); DM_SHOW_FPS=0 / 1 in Documents/env.txt overrides that without a rebuild. NULL when off
+// On when the IPA was built with it (the NSP script's SHOW_FPS / --show-fps → DMShowFPS in Info.plist); DM_SHOW_FPS=0 / 1 (the launcher, Documents/env.txt) overrides that without a rebuild,
+// and the in-game menu turns it on and off ([DmRootVC showFPS:])
 uint64_t mtl_present_count(void);
 static UILabel *front_ios_fps_label(void) {
-    const char *e = getenv("DM_SHOW_FPS");
-    if (!(e ? atoi(e) != 0 : [[NSBundle.mainBundle objectForInfoDictionaryKey:@"DMShowFPS"] boolValue])) return nil;
     UILabel *l = [UILabel new];
     l.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold]; l.textColor = UIColor.whiteColor; l.textAlignment = NSTextAlignmentCenter;
     l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; l.layer.cornerRadius = 6; l.layer.masksToBounds = YES; l.userInteractionEnabled = NO;
@@ -337,6 +370,70 @@ void front_progress(const char *title, long done, long total) {
     });
 }
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
+int front_display_pixels(int *w, int *h) {   // the screen in pixels, landscape (nativeBounds is portrait); UIScreen's sizes may be read from any thread
+    CGRect b = UIScreen.mainScreen.nativeBounds; int a = (int)b.size.width, c = (int)b.size.height;
+    if (a <= 0 || c <= 0) return 0;
+    *w = a > c ? a : c; *h = a > c ? c : a; return 1;
+}
+// Offline HTML pages (web_apple.m): the page's view goes over the game view and under the gamepad, which lets touches on no control through to it while the page is
+// shown (DmGamepad.m hitTest); the page takes them as a click on what they land on, and the gamepad and controllers drive it as on the Switch
+void front_web_attach(UIView *box) {
+    UIView *v = g_root.view; box.frame = v.bounds;
+    if (g_root.game) [v insertSubview:box aboveSubview:g_root.game]; else [v addSubview:box];
+}
+void front_web_detach(UIView *box) { (void)box; }
+// An app of several programs (main.m: dm/programs.txt; DM_EXEC_OUT is set only there). iOS cannot start the app's process again, so oe::ExecuteProgram records the next program and the
+// app ends (hle_oe.c); the next start runs it. To spare the player a silent quit, the app names the program on screen for 1.5 s, then schedules a local notification 1 s ahead that
+// opens the app again ("Tap to start …"), then ends. Notifications are asked for at the first start of such an app; a player who refuses gets the plain quit
+static int multi_program(void) { const char *e = getenv("DM_EXEC_OUT"); return e && *e; }
+@interface DmNotifyDelegate : NSObject <UNUserNotificationCenterDelegate>
+@end
+@implementation DmNotifyDelegate
+// The notification can come due before the graceful exit has ended the process: show it anyway, so it waits in the notification centre once the app is gone
+- (void)userNotificationCenter:(UNUserNotificationCenter *)c willPresentNotification:(UNNotification *)n withCompletionHandler:(void (^)(UNNotificationPresentationOptions))done {
+    (void)c; (void)n; done(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList);
+}
+@end
+static DmNotifyDelegate *g_notify_delegate;
+static void front_ios_notify_setup(void) {   // at each start: the delegate, and no notification left from an earlier hand-off (the app is open now)
+    if (!multi_program()) return;
+    UNUserNotificationCenter *c = UNUserNotificationCenter.currentNotificationCenter;
+    g_notify_delegate = [DmNotifyDelegate new]; c.delegate = g_notify_delegate;
+    [c removeAllPendingNotificationRequests]; [c removeAllDeliveredNotifications];
+}
+static void front_ios_notify_ask(void) {   // iOS asks the player only while the choice is not made, so this shows a prompt at the first start alone
+    if (!multi_program()) return;
+    [UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound completionHandler:^(BOOL granted, NSError *e) {
+        LOG("front end: notifications %s%s%s", granted ? "allowed" : "not allowed", e ? ": " : "", e ? e.localizedDescription.UTF8String : ""); }];
+}
+static int notify_allowed(void) {
+    __block UNAuthorizationStatus st = UNAuthorizationStatusNotDetermined; dispatch_semaphore_t got = dispatch_semaphore_create(0);
+    [UNUserNotificationCenter.currentNotificationCenter getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *t) { st = t.authorizationStatus; dispatch_semaphore_signal(got); }];
+    if (dispatch_semaphore_wait(got, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC))) return 0;
+    return st == UNAuthorizationStatusAuthorized || st == UNAuthorizationStatusProvisional || st == UNAuthorizationStatusEphemeral;
+}
+void front_program_handoff(int index, const char *name) {   // front.h; on the guest thread that called oe::ExecuteProgram, before the graceful exit
+    if (!multi_program() || !notify_allowed()) { LOG("front end: program %d starts at the next start of the app (notifications not allowed)", index); return; }
+    NSString *nm = name && *name ? @(name) : [NSString stringWithFormat:@"program %d", index];
+    dm_audio_suspend(1);   // the game is ending: no sound under the notice
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *w = g_root.view.window; if (!w) return;
+        UIView *o = [[UIView alloc] initWithFrame:w.bounds]; o.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        o.backgroundColor = [UIColor colorWithWhite:0 alpha:0.85];
+        UILabel *lb = [[UILabel alloc] initWithFrame:CGRectInset(o.bounds, 40, 0)]; lb.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        lb.numberOfLines = 0; lb.textAlignment = NSTextAlignmentCenter; lb.textColor = UIColor.whiteColor;
+        lb.font = [UIFont systemFontOfSize:22 weight:UIFontWeightSemibold]; lb.text = [NSString stringWithFormat:@"Starting %@\u2026", nm];
+        [o addSubview:lb]; [w addSubview:o];
+    });
+    usleep(1500 * 1000);
+    UNMutableNotificationContent *c = [UNMutableNotificationContent new]; c.body = [NSString stringWithFormat:@"Tap to start %@", nm];
+    UNNotificationRequest *r = [UNNotificationRequest requestWithIdentifier:@"dm.program" content:c trigger:[UNTimeIntervalNotificationTrigger triggerWithTimeInterval:1.0 repeats:NO]];
+    __block NSError *err = nil; dispatch_semaphore_t added = dispatch_semaphore_create(0);
+    [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:r withCompletionHandler:^(NSError *e) { err = e; dispatch_semaphore_signal(added); }];
+    if (dispatch_semaphore_wait(added, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC))) LOG("[RED] front end: the notification for program %d was not scheduled within 2 s", index);
+    else if (err) LOG("[RED] front end: the notification for program %d could not be scheduled: %s", index, err.localizedDescription.UTF8String);
+    else LOG("front end: \"Starting %s\" shown, notification for program %d scheduled", nm.UTF8String, index);
+}
 void front_run(void (*guest)(void)) { guest(); }   // Already on main.m's big-stack thread
 
 // Software keyboard: show a UIAlertController on the main thread, the calling thread waits for the result

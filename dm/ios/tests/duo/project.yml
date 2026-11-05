@@ -9,6 +9,8 @@ targets:
     sources:
       - path: Sources
       - path: ../../Sources/DmHostingController.swift
+      - path: ../../Sources/GameMenu.swift
+      - path: ../../Sources/LauncherSettings.swift
       - path: ../../Sources/DmGamepad.m
       - path: ../../Sources/front_ios.m
     dependencies:
@@ -58,6 +60,7 @@ targets:
           - $(SRCROOT)/../../../host
           - $(SRCROOT)/../../Sources
           - $(SRCROOT)/Sources/Fixtures
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/../../Sources/DmIOS-Bridging-Header.h
         CLANG_ENABLE_OBJC_ARC: YES
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
@@ -86,23 +89,6 @@ targets:
         CLANG_ENABLE_OBJC_ARC: YES
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
-  DuoHarnessUITests:
-    type: bundle.ui-testing
-    platform: iOS
-    sources:
-      - path: UITests
-    dependencies:
-      - target: DuoHarness
-    settings:
-      base:
-        GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: org.nxnative.DuoHarnessUITests
-        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
-        TEST_TARGET_NAME: DuoHarness
-        TARGETED_DEVICE_FAMILY: "1,2"
-        SWIFT_VERSION: "5.0"
-        CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
 schemes:
   DuoHarness:
     build:
@@ -113,12 +99,3 @@ schemes:
       config: Debug
       targets:
         - DuoHarnessTests
-  DuoHarnessNativeRotation:
-    build:
-      targets:
-        DuoHarness: all
-        DuoHarnessUITests: [test]
-    test:
-      config: Debug
-      targets:
-        - DuoHarnessUITests

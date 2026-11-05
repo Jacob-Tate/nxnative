@@ -32,6 +32,9 @@ typedef struct {
 } DuoHarnessState;
 
 DuoHarnessInput duo_harness_input(void);
+int duo_harness_rumble(void);   // the in-game menu's rumble switch (dm_haptics_set_enabled)
+void dm_set_opmode(int mode);
+int dm_opmode(void);
 DuoHarnessState duo_harness_state(void);
 void duo_harness_clear(void);
 

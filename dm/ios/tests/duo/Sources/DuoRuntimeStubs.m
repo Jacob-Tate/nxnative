@@ -95,7 +95,12 @@ void dm_motion_clear(int player) {
 
 uint32_t dm_player_npad(int player) { return player == 0 ? 0x20 : (uint32_t)player; }
 
-int dm_opmode(void) { return 0; }
+static int g_opmode;   // handheld, until a test or the in-game menu docks it
+int dm_opmode(void) { return g_opmode; }
+void dm_set_opmode(int mode) { g_opmode = mode; }
+static int g_rumble = 1;
+void dm_haptics_set_enabled(int on) { g_rumble = on; }
+int duo_harness_rumble(void) { return g_rumble; }
 void dm_haptics_apple_init(void) {}
 void dm_haptics_apple_controller(int player, GCController *controller) { (void)player; (void)controller; }
 
@@ -113,5 +118,6 @@ void dm_audio_reset(void) {}
 void dm_focus_set(int state) { (void)state; }
 void guest_clock_freeze_for(int reason, int on) { (void)reason; (void)on; }
 const char *front_ios_boot_message(void) { return NULL; }
+const char *front_ios_device_check(void) { return NULL; }   // a supported GPU
 void dm_cloud_saves_env(void) {}
 int save_sync_flush(int timeout_ms) { (void)timeout_ms; return 1; }
