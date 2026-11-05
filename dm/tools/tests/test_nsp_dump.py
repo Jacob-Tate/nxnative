@@ -140,10 +140,16 @@ class Main(Base):
         with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), self.assertRaisesRegex(nsp.BuildError, 'which holds'):
             nsp.main(nsp.parse_args([str(self.dump), '--title-id', '0100000000010000']))
 
-    def test_no_profile_refused(self):
-        d = self.dump.parent / 'unknown'; version(d / 'base', tid=0x0400000000000000)
-        with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), self.assertRaisesRegex(nsp.BuildError, 'has none'):
-            nsp.main(nsp.parse_args([str(d)]))
+    def test_no_profile_surveys_the_newest_version(self):   # a dump of a game with no profile is surveyed from its files (Ocarina of Time's .nup, unpacked by scripts/unpack_nup.py)
+        tid = 0x0400000000000000
+        d = self.dump.parent / 'unknown'; version(d / 'base', tid=tid, main=b'base code'); version(d / 'updates/131072', tid=tid, main=b'update code')
+        # the fake NPDM has the 64-bit instruction flag clear: the survey stops right after taking the code modules, before any tool runs
+        with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), mock.patch.object(nsp, 'check_capstone'), \
+             mock.patch.object(nsp, 'package_title_reader', side_effect=AssertionError('read a package')), self.assertRaisesRegex(nsp.BuildError, '32-bit ARM'):
+            nsp.main(nsp.parse_args([str(d), '--survey-only']))
+        exefs = d / f'{tid:016X}_survey/extract/ExeFS'
+        self.assertEqual((exefs / 'main').read_bytes(), b'update code')
+        self.assertFalse((exefs / '.listing').exists())
 
 
 if __name__ == '__main__':

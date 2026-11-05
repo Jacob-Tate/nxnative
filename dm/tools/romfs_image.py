@@ -12,6 +12,7 @@
 #           binary search per path component; directories are numbered breadth-first.
 # The index comes last, so a copy cut off partway has no valid index (the header points past the end of the file) and the host refuses it.
 # Names are the guest names: a host name chosen on a case collision (.dm-case-N) is replaced by the one in its xattr, as hle_fs.c's guest_name does.
+# An AppleDouble file `._x` beside `x` (exFAT, FAT) is left out.
 # Usage: romfs_image.py [--reuse] <RomFS folder> <out image>   (written to <out>.part, renamed at the end)
 # --reuse checks the source tree's names and file metadata, the packer's version and the image's identity before keeping a previous image.
 import argparse, hashlib, json, os, struct, subprocess
@@ -29,13 +30,17 @@ def guest(parent, name):
     return r.stdout.rstrip('\n') if r.returncode == 0 else name
 
 
-def children(path):
-    out = []
-    with os.scandir(path) as it:
-        for e in it:
-            out.append((guest(path, e.name).encode(), e.path, e.is_dir(follow_symlinks=True)))
+def children(path):   # a directory's entries, without the AppleDouble files an exFAT or FAT drive keeps beside them
+    with os.scandir(path) as it: ents = list(it)
+    names = {e.name for e in ents}
+    out = [(guest(path, e.name).encode(), e.path, e.is_dir(follow_symlinks=True)) for e in ents if not appledouble(e.name, names)]
     out.sort()
     return out
+
+
+def appledouble(name, names):   # `._x` beside `x`: macOS's store of x's extended attributes on a file system without them (exFAT, FAT), not a game file.
+    # Every file written there gets one (com.apple.provenance at least), so a dump unpacked onto such a drive has one per file: 186,583 in Ocarina of Time's RomFS
+    return name.startswith('._') and name[2:] in names
 
 
 def entries(src):

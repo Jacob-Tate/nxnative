@@ -153,6 +153,12 @@ $(B)/t_audio_device: t_audio_device.c ../hle_audio.c ../hle_bigstack.c ../hle.h 
 audio-device: $(B)/t_audio_device
 	$(B)/t_audio_device
 run: audio-device
+$(B)/t_eventfd: t_eventfd.c ../hle_net.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_eventfd.c
+.PHONY: eventfd
+eventfd: $(B)/t_eventfd
+	$(B)/t_eventfd
+run: eventfd
 $(B)/t_audio_spsc_tsan: t_audio_spsc.c ../hle_audio.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -O1 -fsanitize=thread -Wno-unused-function -I.. $(GINC) -o $@ t_audio_spsc.c ../hle_bigstack.c -framework AudioToolbox
 run: $(B)/t_fpslock
