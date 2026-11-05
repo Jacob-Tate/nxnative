@@ -195,16 +195,9 @@
 ### A `.nup` package of a game with no profile, unpacked into a dump folder
 
 - **Symptom:** `[RED] a NUP packs only a game with a profile, and <title ID> has none` for a game with no profile: the NSP script builds from a NUP (`scripts/pack_nup.py`) only a game that has one.
-- **Cause:** the survey that makes a provisional profile read NSPs ([A dump folder of a game with no profile](#a-dump-folder-of-a-game-with-no-profile) lifts that for a dump folder, not for a NUP).
+- **Cause:** the survey that makes a provisional profile read NSPs (the NSP script surveys a dump folder with no profile, [development.md](../development.md), not a NUP).
 - **Fix:** `scripts/unpack_nup.py <package> <dump folder>` writes the dump layout `pack_dump.py` and the NSP script take (`base/exefs/`, `updates/<version>/exefs/` and `romfs/`), each file checked against the SHA-256 the package records as it is copied; it resumes, keeping files of the right size. An update's tree is whole (its ExeFS and the patched RomFS), so the base game's RomFS is left out unless `--base-romfs` asks for it; `--list` prints the titles. The format, as read from this package, is in the script's header. On an exFAT drive delete the dump's AppleDouble files afterwards ([above](#a-dump-folder-on-an-exfat-drive-puts-appledouble-files-into-the-romfs-image)).
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): base v65536 (185,999 files) and update v131072 (186,588 files), 24.5 GB each, 25.6 GB as a package.
-
-### A dump folder of a game with no profile
-
-- **Symptom:** `[RED] a dump folder packs only a game with a profile, and <title ID> has none: the survey that makes a provisional profile reads NSPs`.
-- **Cause:** the survey extracted the code modules and a RomFS manifest with nx_extract, which reads NSPs.
-- **Fix:** `build_ipa_from_nsp.py` `survey` reads a dump's newest version directly: its ExeFS (copied into `<title ID>_survey/extract/ExeFS`) and its RomFS folder, whose file headers `profile_guess.facts_of` reads in place (minutes for a large RomFS on a USB drive). A dump has no control data, so the name and the display version are not known (`--app-name`). `same_build` reads a dump's build IDs from its modules. The rest (provisional profile, heap check, extraction with `pack_dump.py`) was already the same for both (`dm/tools/tests/test_nsp_dump.py`).
-- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md).
 
 ### A Switch 2 game's provisional profile gets a Switch 1 memory layout
 

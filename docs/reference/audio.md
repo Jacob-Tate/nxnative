@@ -305,12 +305,12 @@ For a replaced DSP renderer the size query keeps the service's work-buffer contr
 - **Fix:** `ListAudioIns` reports none, both opens fail, and the calls that need an open AudioIn answer without touching the game's object (`hle_audio.c`). `AcquireAudioDeviceNotificationForInput` binds an event that is never signaled and returns 0x499 when acquired again, as the SDK does with a flag of its own (SDK 13.3.0 `sdk+0x56300`: `+0x851`, the output's `+0x852`; `hle_audren.c`).
 - **Found on:** [Absolum](../../dm/games/0100A83022A22000/README.md) (SDK 18.3.2, FNA on .NET NativeAOT with SDL3; one boot each); [Portal 2](../../dm/games/0100ABD01785C000/README.md) (SDK 13.3.0: its audio thread at start, `main+0x19f37c`).
 
-### Virtual input devices (SDK 22)
+### No virtual audio input devices (SDK 22)
 
-- **Symptom:** `[RED] sf: the game connects to service auddmg:u itself, which the host does not serve`, then `game called nn::diag abort: Result 0xa99, call site sdk+0x1f61ac`, a few seconds after boot.
-- **Cause:** the Switch 2 SDK lists the console's microphones as virtual input devices, `nn::audio::ListVirtualInputDevices(AudioDeviceName*, int)`, through the audio device manager service `auddmg:u`. The host does not serve it, sm refused it (0xe15) and the SDK aborted.
-- **Fix:** the host takes the call over and reports no device (`hle_audio.c`, `h_is_List`): it has no microphone, as for [No audio input devices](#no-audio-input-devices). Ocarina of Time tests the count (`cmp w0, #1; b.lt`, `main+0xf48128`) and opens no input stream (`GetTrueRawAudioInputDevice`, `OpenInputStream`) without one.
-- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md) (SDK 22.2.8; its voice chat set-up at boot, `main+0xf48124`).
+- **Symptom:** at boot, `[RED] sf: the game connects to service auddmg:u itself, which the host does not serve`, then `game called nn::diag abort: Result 0xa99` in the sdk (`nn::audio::detail::ListVirtualInputDevices`).
+- **Cause:** SDK 22's virtual input devices (the Switch 2's microphone routing) are listed through the `auddmg:u` service, which the SDK's own client connects to ([services the game connects to itself](../../dm/host/hle_sf.c)). `nn::audio::ListVirtualInputDevices` had no hook, so the SDK's code ran and aborted on the refused connection.
+- **Fix:** `hle_audio.c` answers `ListVirtualInputDevices` with no devices, as `ListAudioIns` ([above](#no-audio-input-devices)): the host has no microphone.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), which lists them at boot.
 
 ### `OpenAudioOut` without a release event (SDK 22)
 
