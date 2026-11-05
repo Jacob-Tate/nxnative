@@ -226,6 +226,57 @@ def ndsr_shaders(d, label):
         out.append((where, st, ctl, code))
         if st == 'vs': prog = where
         elif st == 'ps' and prog: BAHS_VAR[prog] = BAHS_VAR[where] = f'{label}#NDSR#{prog.rsplit("@", 1)[1]}'; prog = None
+    seen = {w.rsplit('@', 1)[1] for w, *_ in out}
+    for c, n, k in ndsr_pairs(d):   # the pair stream, where it holds shaders the records above did not give (Ocarina of Time's video network)
+        if f'{c:#x}' in seen: continue
+        ctl = d[c:c + max(n, 0x48)]
+        code = d[k:k + struct.unpack_from('<I', ctl, 0x44)[0]]
+        st = nvn2_stage(ctl, code)
+        if st is None or check(label, st, ctl, code): continue
+        out.append((f'{label}#NDSR@{c:#x}', st, ctl, code)); seen.add(f'{c:#x}')
+    return out
+
+def ndsr_pairs(d):
+    """An NDSR pack read as Ocarina of Time's video network has it (Movie/Ndve/*.dat.zs, inside NDVE): 'NDSR', two header words, u32 count at +0xc, then that many
+    (u32 offset, u32 size | type) pairs, from +0x14 after one more header word in that pack (+4 0x40100, as Splatoon Raiders'), the start where they point at control sections. Type 6 (or 0 / 3) is a control section of size >> 4 bytes, type 7 a code area of (size >> 8) × 16 bytes; the others hold constant data
+    (0xc: a 1 MB weights blob, 9 / 0xb / 0xd / 0xe small tables), so the 16-byte records ndsr_shaders reads first lose their alignment after the first data pair.
+    → [(control section offset, its length, the code area offset of the type-7 pair after it)]"""
+    if len(d) < 0x10: return []
+    n = struct.unpack_from('<I', d, 0xc)[0]
+    if not 0 < n <= 0x1000 or 0x14 + 8 * n > len(d): return []
+    def ctls(o): return sum(1 for c, w in struct.iter_unpack('<2I', d[o:o + 8 * n]) if w & 0xf in (0, 3, 6) and c + 0x48 <= len(d) and nvn2_ctl(d[c:c + 0x48]))
+    o = max((0x10, 0x14), key=ctls)
+    pairs = list(struct.iter_unpack('<2I', d[o:o + 8 * n]))
+    out = []
+    for i, (c, w) in enumerate(pairs):
+        if w & 0xf not in (0, 3, 6) or not (c + 0x48 <= len(d) and nvn2_ctl(d[c:c + 0x48])): continue
+        code = next((k for k, kw in pairs[i + 1:] if kw & 0xf == 7), None)
+        if code is not None: out.append((c, w >> 4, code))
+    return out
+
+def ndve_shaders(d, label):
+    """NVIDIA's video enhancement for a movie (Ocarina of Time: Movie/Ndve/Ndve-Nvn2-vid_seq5.dat.zs, applied to its AV1 title movie): 'NDVE', then an NDSR pack at +0x28 whose
+    offsets count from the pack (its compute network: ndsr_shaders), and a section (header +0xc, size +0x10) of graphics shaders, each a control section that names its own length
+    (+0x30) with its code area (length +0x44) right behind it; the section's own table of (offset, control length, code length) agrees with those fields.
+    Read neither way, the title screen bound 11 shaders that were not in the shader map"""
+    out = []
+    o = d.find(b'NDSR', 0, 0x100)
+    if o >= 0:
+        for where, st, ctl, code in ndsr_shaders(d[o:], label): out.append((f'{label}#NDVE@{o + int(where.rsplit("@", 1)[1], 16):#x}', st, ctl, code))
+    seen = {w.rsplit('@', 1)[1] for w, *_ in out}
+    prog = None
+    for m in re.finditer(re.escape(CTL_MAGIC), d):
+        c = m.start()
+        if f'{c:#x}' in seen or c + 0x48 > len(d) or not nvn2_ctl(d[c:c + 0x48]): continue
+        own, n = struct.unpack_from('<I', d, c + 0x30)[0], struct.unpack_from('<I', d, c + 0x44)[0]
+        if own < 0x48 or c + own + n > len(d): continue
+        ctl, code = d[c:c + own], d[c + own:c + own + n]
+        st = nvn2_stage(ctl, code)
+        if st is None or check(label, st, ctl, code): continue
+        where = f'{label}#NDVE@{c:#x}'
+        out.append((where, st, ctl, code))
+        if st == 'vs': prog = where
+        elif st == 'ps' and prog: BAHS_VAR[prog] = BAHS_VAR[where] = f'{label}#NDVE#{prog.rsplit("@", 1)[1]}'; prog = None
     return out
 
 BAHS_VAR = {}   # BAHS entry label → the program variation it belongs to (bahs_variations; var_pairs pairs by it)
@@ -2515,6 +2566,7 @@ def scan_blob(d, label, out, depth=0, left=None):
         return
     if d[:4] == b'BAHS': out.extend(bahs_shaders(d, label)); return
     if d[:4] == b'NDSR': out.extend(ndsr_shaders(d, label)); return
+    if d[:4] == b'NDVE': out.extend(ndve_shaders(d, label)); return
     if shaders := sead_prim_shaders(d, label): out.extend(shaders); return
     if d[:len(TFXO)] == TFXO: out.extend(tfxo_shaders(d, label)); return
     if d[:4] == b'MSHD': out.extend(mshd_shaders(d, label)); return
@@ -2818,7 +2870,7 @@ def scan_file_in(args):
         try: pairs = unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree: return rel, {}, set(), 'defer'
         return rel, uniq_keys(found), var_pairs(found) | {(a, b, 'prog') for a, b in pairs}, trees
-    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and d[:4] != b'NARC' and not (d[:4] == b'SARC' and b'Yaz0' in d) and b'\x91\x68\x86\x19' not in d and MGFX not in d and NEEDLE not in d and d[:8] != SUMO_MUX and SUMO_NX not in d and NVNSH not in d: return rel, {}, set(), {}   # a SARC may hold Yaz0 members, a NARC packed ones (cra.undo)
+    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and d[:4] != b'NARC' and not (d[:4] == b'SARC' and b'Yaz0' in d) and b'\x91\x68\x86\x19' not in d and MGFX not in d and NEEDLE not in d and d[:8] != SUMO_MUX and SUMO_NX not in d and NVNSH not in d and d[:4] != b'NDVE': return rel, {}, set(), {}   # a SARC may hold Yaz0 members; an NDVE pack holds no BNSH (ndve_shaders), a NARC packed ones (cra.undo)
     else:
         scan_blob(d, '/' + rel, found)
         # whole GLSLC outputs in a file no other reader takes (FINAL FANTASY TACTICS - The Ivalice Chronicles: its engine's technique files, resources_nx/…/shader/*.tec, 261 outputs beside

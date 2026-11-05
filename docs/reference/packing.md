@@ -183,6 +183,36 @@
 - **Fix:** exclude `._` names when listing both external shader directories, including `DM_GLSLC_CAPTURE` and `DM_UE_SHADERS` overrides. Other dot-prefixed names remain valid inputs, and malformed real inputs still fail their normal validation.
 - **Found on:** an external-drive build reported in [issue #229's follow-up](https://github.com/seedds/nxnative/issues/229#issuecomment-6563450365). That commenter used a different, unnamed game; this fixes the sidecar failure, not the original Metroid Prime 4 port.
 
+### A dump folder on an exFAT drive puts AppleDouble files into the RomFS image
+
+- **Symptom:** a dump written onto an exFAT drive (`scripts/unpack_nup.py`, or any copy made there) has a `._<name>` beside every file, 186,583 in Ocarina of Time's RomFS. Each takes a whole cluster (the RomFS folder took 95 GB of the drive for 18.7 GB of files), and `romfs_image.py` packed them into the image as game files.
+- **Cause:** macOS gives every file a process writes an extended attribute (`com.apple.provenance` at least) and keeps it in an AppleDouble file on a file system without them, as above.
+- **Fix:** `dm/tools/romfs_image.py` `children` leaves out `._x` when `x` is beside it; a `._` name with no such file is still packed (`dm/tools/tests/test_romfs_image.py`). Deleting the AppleDouble files of a dump frees the clusters: `find <dump> -name '._*' -delete` needed three passes on exFAT, as deleting while the directory is listed skips entries.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md). Applies to every dump on an exFAT or FAT drive.
+
+## Game packages and dumps
+
+### A `.nup` package of a game with no profile, unpacked into a dump folder
+
+- **Symptom:** `[RED] a NUP packs only a game with a profile, and <title ID> has none` for a game with no profile: the NSP script builds from a NUP (`scripts/pack_nup.py`) only a game that has one.
+- **Cause:** the survey that makes a provisional profile read NSPs ([A dump folder of a game with no profile](#a-dump-folder-of-a-game-with-no-profile) lifts that for a dump folder, not for a NUP).
+- **Fix:** `scripts/unpack_nup.py <package> <dump folder>` writes the dump layout `pack_dump.py` and the NSP script take (`base/exefs/`, `updates/<version>/exefs/` and `romfs/`), each file checked against the SHA-256 the package records as it is copied; it resumes, keeping files of the right size. An update's tree is whole (its ExeFS and the patched RomFS), so the base game's RomFS is left out unless `--base-romfs` asks for it; `--list` prints the titles. The format, as read from this package, is in the script's header. On an exFAT drive delete the dump's AppleDouble files afterwards ([above](#a-dump-folder-on-an-exfat-drive-puts-appledouble-files-into-the-romfs-image)).
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): base v65536 (185,999 files) and update v131072 (186,588 files), 24.5 GB each, 25.6 GB as a package.
+
+### A dump folder of a game with no profile
+
+- **Symptom:** `[RED] a dump folder packs only a game with a profile, and <title ID> has none: the survey that makes a provisional profile reads NSPs`.
+- **Cause:** the survey extracted the code modules and a RomFS manifest with nx_extract, which reads NSPs.
+- **Fix:** `build_ipa_from_nsp.py` `survey` reads a dump's newest version directly: its ExeFS (copied into `<title ID>_survey/extract/ExeFS`) and its RomFS folder, whose file headers `profile_guess.facts_of` reads in place (minutes for a large RomFS on a USB drive). A dump has no control data, so the name and the display version are not known (`--app-name`). `same_build` reads a dump's build IDs from its modules. The rest (provisional profile, heap check, extraction with `pack_dump.py`) was already the same for both (`dm/tools/tests/test_nsp_dump.py`).
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md).
+
+### A Switch 2 game's provisional profile gets a Switch 1 memory layout
+
+- **Symptom:** the survey of a Switch 2 game reports `SDK: ?` and guesses `app_pool 0xCD500000` (3.2 GB, a Switch 1's pool), with Engage's 5 GB block for a game with virtual address memory.
+- **Cause:** `profile_guess.py` found the SDK version only as `NintendoSDK_nnSdk-16_2_0`; Switch 2 SDKs name a variant, `nnSdk-Generic_22_2_8`. And the memory rules knew only the Switch 1, although every Switch 2 profile uses the 9 GB pool.
+- **Fix:** `profile_guess.py` reads both spellings (`SDK_VERSION`) and marks a game whose modules say `spec: Ounce` (the sdk's FS_ACCESS line; `loader.c` `dm_sdk_ounce` tests the same). Such a game gets `app_pool 0x240000000`, and with virtual address memory Splatoon Raiders' and Fire Emblem Fortune's Weave's block (`mem_reserve 0x550000000`, a 16 GB alias region); without it the heap rule gives Donkey Kong Bananza's and Pokémon Pokopia's `0x270000000`. `dm/tools/tests/test_profile_guess.py` `SwitchTwoMemory`.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): the heap check then moved the split for its 6.2 GB heap (`mem_alias 0x3a0000000`).
+
 ## Compressed inputs
 
 ### NSZ decompression rejects `--keys`

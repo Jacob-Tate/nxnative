@@ -498,6 +498,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** `ndsr_shaders` in `shader_split.py` takes the start at which more of the first 16 records point at an NVN2 control section.
 - **Found on:** [Splatoon Raiders](../../dm/games/0400380020056000/README.md).
 
+### NVIDIA's video enhancement packs (NDVE)
+
+- **Symptom:** on the title screen, which plays an AV1 movie, `shader <key> is not in the shader map` for 11 shaders, all compute, and `the dispatched program has no compute shader (or it is not mapped)`; `DM_NVN_SHDUMP` finds their code only in `Movie/Ndve/Ndve-Nvn2-vid_seq5.dat.zs`.
+- **Cause:** the file is an `NDVE` pack, a network of compute shaders over the movie's pictures. It holds an NDSR pack at +0x28 and, in a section its header names (+0xc offset, +0x10 size), 20 more shaders, each a control section that names its own length (+0x30) with its code area (length +0x44) right behind it. The split read neither. Its NDSR pack is also a stream of (offset, size | type) pairs (count at +0xc, from +0x14), not 16-byte records: a data pair (a 1 MB weights blob, small tables) between two shaders put the second one out of the records' alignment.
+- **Fix:** `shader_split.py` `ndve_shaders` reads the NDSR pack with offsets from the pack and every control section that carries its own length; `ndsr_pairs` reads the pair stream, each control section (type 6, or 0 / 3) with the code area of the next type-7 pair, after the records (`ndsr_shaders`, deduplicated by offset). `dm/tools/tests/test_split_ndve.py` covers both.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md) (22 shaders in the pack).
+
 ## Control sections and code
 
 ### Code area and control section layout

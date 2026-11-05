@@ -708,6 +708,13 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Fix:** `Poll` and `Select` with nothing to wait on (no descriptors, or only negative ones, which POSIX ignores) now wait out their timeout and return 0, in every mangling the host takes over, including SDK 4's `Select(int, fd_set*, …, timeval*)`; an endless timeout returns 0 after 100 ms, since a thread inside a host hook pauses for IL2CPP's collector only once the hook returns (`hle_net.c`, `dm_guest_sleep_ns` in `hle_thread.c`).
 - **Found on:** [DARK SOULS: REMASTERED](../../dm/games/01004AB00A260000/README.md) (SDK 4.5.0; one boot). Guest CPU fell from 1,030 to 60 ms per second.
 
+### Event descriptors (gRPC's wakeup fd)
+
+- **Symptom:** `game called nn::diag abort: Result 0, call site sdk+0xb8fe8` from the game's own `abort()` (`main+0x21f0c7c`) early in boot, after the RomFS mounts: gRPC's `grpc_init` found no event engine (`[x23, #0xf8]` still null after trying `poll` and `none`, Ocarina of Time `main+0x21f0c48`).
+- **Cause:** gRPC, part of Nintendo's online stack (NPLN), starts its poll engine only with a wakeup fd, `nn::socket::EventFd(0, close-on-exec | non-blocking)` (`main+0x21f3a68`). The host failed it as a network call (ENETDOWN), so `grpc_has_wakeup_fd()` read 0 and both engines refused. On Horizon an event descriptor is a counter the bsd service keeps locally, so it works offline.
+- **Fix:** `hle_net.c` keeps event descriptors itself (numbers from 0x100): `EventFd` makes one, `EventFdWrite` adds to it, `EventFdRead` returns and clears it (one in semaphore mode) and blocks unless non-blocking, `Close` / `nnsocketClose` free it, and `Poll` waits on them (POLLIN when the counter is not zero, POLLOUT always; any other descriptor still fails, as before). A read of an empty non-blocking descriptor sets `nn::socket::GetLastError` to FreeBSD's EAGAIN (35) and the C library's `errno`, which gRPC reads (`main+0x21f3b00`), to 11 through the guest's `__errno_location`.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md) (SDK 22.2.8; NPLN 1.55.1).
+
 ## Settings, languages and fonts
 
 ### Language codes

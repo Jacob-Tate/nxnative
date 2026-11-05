@@ -307,6 +307,13 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             Operation operation = node.Value as Operation;
             Operand globalAddress = operation.GetSource(0);
             SearchResult result = FindUniqueBaseAddressCb(gtsContext, block, globalAddress, needsOffset: true);
+            bool offsetFromBase = false;
+
+            if (!result.Found && TryFindAddTreeBaseCb(block, globalAddress, out int treeCbSlot, out int treeCbOffset))
+            {
+                result = new SearchResult(treeCbSlot, treeCbOffset, null);
+                offsetFromBase = true;
+            }
 
             if (result.Found)
             {
@@ -335,6 +342,15 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                     node.List.AddBefore(node, subOp);
 
                     offset = hostOffset;
+                }
+                else if (offsetFromBase)
+                {
+                    // The address is the base plus a tree of terms (TryFindAddTreeBaseCb): its offset is the address less the base
+                    Operand treeOffset = Local();
+
+                    node.List.AddBefore(node, new Operation(Instruction.Subtract, treeOffset, globalAddress, Cbuf(result.SbCbSlot, result.SbCbOffset)));
+
+                    offset = treeOffset;
                 }
                 else if (result.ConstOffset != 0)
                 {
@@ -1277,6 +1293,60 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             }
 
             return GetBaseAddressCbWithOffset(src1, src2, constOffset);
+        }
+
+        // An address that is a storage buffer's base plus more than one offset term, (base + a) + b: the search above follows one add, or two with a constant, so such an
+        // access went to the memory pool table, and the host made every pool resident for it (Ocarina of Time's video network, Movie/Ndve: c0[0x350], compute storage slot 4,
+        // plus two terms; 2,084 pools, 4.2 GB wired on an 8 GB Mac). The adds are walked as a tree: exactly one leaf a 64-bit aligned word of the driver bank (a storage
+        // buffer address there), and no leaf a phi (TryGenerateMultiTargetStorageOp's case) or a memory load (an address read from memory: the pool table's case,
+        // Donkey Kong Bananza). Used only where the search above found nothing
+        private const int AddTreeMaxLeaves = 16;
+
+        private static bool TryFindAddTreeBaseCb(BasicBlock block, Operand globalAddress, out int cbSlot, out int cbOffset)
+        {
+            cbSlot = -1;
+            cbOffset = 0;
+
+            List<Operand> leaves = new();
+            Stack<Operand> pending = new();
+            pending.Push(globalAddress);
+
+            while (pending.Count != 0)
+            {
+                Operand term = Utils.FindLastOperation(pending.Pop(), block);
+
+                if (term.AsgOp is Operation add && add.Inst == Instruction.Add)
+                {
+                    pending.Push(add.GetSource(0));
+                    pending.Push(add.GetSource(1));
+                    continue;
+                }
+
+                if (term.AsgOp is PhiNode || (term.AsgOp is Operation op && op.Inst == Instruction.Load) || leaves.Count == AddTreeMaxLeaves)
+                {
+                    return false;
+                }
+
+                leaves.Add(term);
+            }
+
+            foreach (Operand leaf in leaves)
+            {
+                if (leaf.Type != OperandType.ConstantBuffer || leaf.GetCbufSlot() != DriverReservedCb || (leaf.GetCbufOffset() & 1) != 0)
+                {
+                    continue;
+                }
+
+                if (cbSlot != -1)
+                {
+                    return false;
+                }
+
+                cbSlot = leaf.GetCbufSlot();
+                cbOffset = leaf.GetCbufOffset();
+            }
+
+            return cbSlot != -1 && leaves.Count > 1;
         }
 
         private static SearchResult FindBaseAddressCbFromMemory(GtsContext gtsContext, Operation operation, int constOffset, bool needsOffset)

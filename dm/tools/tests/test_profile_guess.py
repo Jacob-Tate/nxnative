@@ -99,6 +99,22 @@ class UnrealMemory(unittest.TestCase):
 
 
 
+class SwitchTwoMemory(unittest.TestCase):   # `spec: Ounce` in the sdk: the Switch 2's 9 GB pool, laid out as the Switch 2 profiles are
+    def keys(self, sysres):
+        facts = {'mods': {'main': {'imports': {'nvnBootstrapLoader', pg.HEAP_API}, 'bss': 0, 'far': False}}, 'romfs': {'root': set(), 'exts': {}}, 'sysres': sysres, 'ounce': True}
+        return {k: int(v[0], 0) for k, v in pg.guess(facts, hooks=set()).items() if k in ('mem_reserve', 'mem_alias', 'app_pool')}
+
+    def test_virtual_address_memory(self):   # Splatoon Raiders, Fire Emblem Fortune's Weave
+        self.assertEqual(self.keys(48 * pg.MiB), {'mem_reserve': 0x550000000, 'mem_alias': 0x400000000, 'app_pool': pg.OUNCE_POOL})
+
+    def test_heap_without_virtual_address_memory(self):   # Donkey Kong Bananza, Pokémon Pokopia
+        self.assertEqual(self.keys(0), {'mem_reserve': 0x270000000, 'mem_alias': 0x10000000, 'app_pool': pg.OUNCE_POOL})
+
+    def test_sdk_version_with_a_variant_name(self):   # Switch 2 SDKs: nnSdk-Generic_22_2_8; older ones NintendoSDK_nnSdk-16_2_0
+        import re
+        self.assertEqual(re.findall(pg.SDK_VERSION, b'\0nnSdk-Generic_22_2_8\0NintendoSDK_nnSdk-16_2_0\0'), [b'22_2_8', b'16_2_0'])
+
+
 class AddressRegions(unittest.TestCase):
     """region_findings: the host's region table (DM_REGIONS) of a run with a Switch-sized alias region against the profile's alias region"""
     SYMS = {'_ZN2nn3mem17StandardAllocator10InitializeEPvmb': (0x1000, 0x100), '_ZN2nn2os21AllocateAddressRegionEPmm': (0x2000, 0x40)}

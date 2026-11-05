@@ -1,7 +1,10 @@
 // Networking (out of scope: online play/friends/store/cloud saves): all hooked up as "network unavailable", the game takes the offline branch.
 // Cuts: nifm reports no network; socket only hooks up Initialize (returns success, creates no session), the rest of socket/ssl/friends are hooked up as failures when they come into use.
+// Not cut: event descriptors (EventFd), a local counter on Horizon too, which Poll waits on.
 #include "hle.h"
 #include <stdatomic.h>
+#include <pthread.h>
+#include <time.h>
 
 HLE_FORCE("_ZN2nn6socket10InitializeERKNS0_6ConfigE", "connects to the bsd socket service; offline, creates no session (cut)", Result, h_socket_Initialize, const void *cfg) { (void)cfg; return RES_OK; }
 // SDK 21 (Star Fox) inlines nn::socket::Initialize(const Config &) into the game, and the service connection is this call
@@ -45,17 +48,94 @@ static int sk_fail(void) { t_skerr = SK_ENETDOWN; return -1; }
 void dm_guest_sleep_ns(int64_t ns);
 static int sk_idle(int64_t ms) { dm_guest_sleep_ns((ms < 0 ? 100 : ms) * 1000000); return 0; }
 typedef struct { int32_t fd; int16_t events, revents; } sk_pollfd;
+
+// Event descriptors (nn::socket::EventFd): a counter the bsd service keeps locally, no network involved, so Horizon creates them offline too. gRPC (in NPLN's online stack) makes one
+// as its poll engine's wakeup fd at grpc_init, EventFd(0, close-on-exec | non-blocking); failed with the network calls, neither of its poll engines ("poll", "none") started and
+// grpc_init aborted ("no event engine", Ocarina of Time main+0x21f0c48). Read returns the counter and clears it (one, in semaphore mode); a non-blocking read of 0 fails with EAGAIN,
+// which gRPC reads from the C library's errno (Linux numbering, 11: main+0x21f3b00) while nn::socket::GetLastError keeps the bsd service's (FreeBSD, 35).
+// Poll waits on them; any other descriptor still fails the call, as the network is down
+enum { EFD_SEMAPHORE = 1, EFD_NONBLOCK = 4 };   // nn::socket::EventFdFlags, FreeBSD's values (close-on-exec 2 does nothing here)
+enum { EFD_BASE = 0x100, EFD_MAX = 64, SK_EAGAIN = 35, LIBC_EAGAIN = 11 };
+enum { SK_POLLIN = 0x1, SK_POLLOUT = 0x4, SK_POLLRDNORM = 0x40, SK_POLLWRNORM = 0x4 };
+static struct { int used, flags; uint64_t v; } g_efd[EFD_MAX];
+static pthread_mutex_t g_efd_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_efd_cv = PTHREAD_COND_INITIALIZER;
+static int efd_slot(int fd) { unsigned i = (unsigned)fd - EFD_BASE; return i < EFD_MAX && g_efd[i].used ? (int)i : -1; }   // caller holds g_efd_mu
+static void sk_errno(int sk, int libc) {   // a failed call's error: the bsd service's code, and the C library's errno the game may read instead
+    t_skerr = sk;
+    static int *(*loc)(void);
+    if (!loc) loc = (int *(*)(void))guest_sym("__errno_location");
+    if (loc) *loc() = libc;
+}
+static void efd_deadline(struct timespec *dl, int64_t ms) {
+    clock_gettime(CLOCK_REALTIME, dl);
+    dl->tv_sec += ms / 1000; dl->tv_nsec += (ms % 1000) * 1000000;
+    if (dl->tv_nsec >= 1000000000) { dl->tv_sec++; dl->tv_nsec -= 1000000000; }
+}
+static int efd_new(uint64_t v, int flags) {
+    pthread_mutex_lock(&g_efd_mu);
+    int i = 0; while (i < EFD_MAX && g_efd[i].used) i++;
+    if (i < EFD_MAX) { g_efd[i].used = 1; g_efd[i].flags = flags; g_efd[i].v = v; }
+    pthread_mutex_unlock(&g_efd_mu);
+    if (i == EFD_MAX) { LOG("[RED] socket: more than %d event descriptors", EFD_MAX); sk_errno(24, 24); return -1; }   // EMFILE (24 in both numberings)
+    return EFD_BASE + i;
+}
+static int efd_close(int fd) {   // 0 when fd was an event descriptor (now closed), -1 when it is not one
+    pthread_mutex_lock(&g_efd_mu);
+    int i = efd_slot(fd);
+    if (i >= 0) { g_efd[i].used = 0; pthread_cond_broadcast(&g_efd_cv); }
+    pthread_mutex_unlock(&g_efd_mu);
+    return i >= 0 ? 0 : -1;
+}
+static int efd_read(int fd, uint64_t *out) {
+    pthread_mutex_lock(&g_efd_mu);
+    int i = efd_slot(fd), r = -1;
+    while (i >= 0 && !g_efd[i].v && !(g_efd[i].flags & EFD_NONBLOCK)) {   // a blocking read waits for a write (in 100 ms slices, rechecking that the descriptor is still open)
+        struct timespec dl; efd_deadline(&dl, 100);
+        pthread_cond_timedwait(&g_efd_cv, &g_efd_mu, &dl);
+        i = efd_slot(fd);
+    }
+    if (i >= 0 && g_efd[i].v) { uint64_t take = g_efd[i].flags & EFD_SEMAPHORE ? 1 : g_efd[i].v; g_efd[i].v -= take; if (out) *out = take; r = 0; }
+    pthread_mutex_unlock(&g_efd_mu);
+    if (r < 0) { if (i < 0) sk_errno(9, 9); else sk_errno(SK_EAGAIN, LIBC_EAGAIN); }   // EBADF (9 in both), or nothing to read
+    return r;
+}
+static int efd_write(int fd, uint64_t v) {
+    pthread_mutex_lock(&g_efd_mu);
+    int i = efd_slot(fd);
+    if (i >= 0) { g_efd[i].v += v; pthread_cond_broadcast(&g_efd_cv); }
+    pthread_mutex_unlock(&g_efd_mu);
+    if (i < 0) { sk_errno(9, 9); return -1; }
+    return 0;
+}
+
 // A descriptor the host never made (it creates no socket): Star Fox's HTTP thread polls two with a zero timeout, its wake-up eventfd that failed (-1) and a garbage one, and takes any failure
 // but EINTR as fatal (main+0xbe2efc4). On a console a socket with nothing to say reports no event at the timeout, so that is the answer for every descriptor: nothing ready, the timeout
-// waited out, 0. Failing with ENETDOWN here made the loop abort
+// waited out, 0. Failing with ENETDOWN here made the loop abort. Event descriptors are the exception: Poll waits on them
 int dm_sk_poll(void *fds, uint64_t n, int ms) {   // also hle_offline.c's plain pollfd form
     sk_pollfd *p = fds;
-    for (uint64_t i = 0; i < n; i++) if (p[i].fd >= 0) {
-        static int once; if (!once++) LOG("socket: Poll of %llu descriptors with one the host never made (fd %d, events %#x; %d ms): nothing ready at the timeout", (unsigned long long)n, p[i].fd, p[i].events, ms);
-        break;
-    }
+    int efds = 0, other = -1;
+    pthread_mutex_lock(&g_efd_mu);
+    for (uint64_t i = 0; i < n; i++) if (p[i].fd >= 0) { if (efd_slot(p[i].fd) >= 0) efds = 1; else if (other < 0) other = (int)i; }
+    if (other >= 0) { static int once; if (!once++) LOG("socket: Poll of %llu descriptors with one the host never made (fd %d, events %#x; %d ms): nothing ready at the timeout", (unsigned long long)n, p[other].fd, p[other].events, ms); }
     for (uint64_t i = 0; i < n; i++) p[i].revents = 0;
-    return sk_idle(ms);
+    if (!efds) { pthread_mutex_unlock(&g_efd_mu); return sk_idle(ms); }
+    // An endless wait returns 0 after 100 ms, as one on nothing does (sk_idle): the caller can still see a shutdown
+    struct timespec dl; efd_deadline(&dl, ms < 0 ? 100 : ms);
+    int ready = 0;
+    for (;;) {
+        ready = 0;
+        for (uint64_t i = 0; i < n; i++) {
+            int k = p[i].fd >= 0 ? efd_slot(p[i].fd) : -1;
+            if (p[i].fd < 0) continue;
+            if (k < 0) continue;   // a descriptor the host never made (or one closed meanwhile): nothing ready
+            int16_t rev = (int16_t)((g_efd[k].v ? p[i].events & (SK_POLLIN | SK_POLLRDNORM) : 0) | (p[i].events & (SK_POLLOUT | SK_POLLWRNORM)));
+            p[i].revents = rev; ready += rev != 0;
+        }
+        if (ready || pthread_cond_timedwait(&g_efd_cv, &g_efd_mu, &dl)) break;
+    }
+    pthread_mutex_unlock(&g_efd_mu);
+    return ready;
 }
 int dm_sk_select(int nfds, const uint64_t *r, const uint64_t *w, const uint64_t *e, const int64_t *tv) {   // fd_set: 1024 bits; timeval: {i64 seconds, i64 microseconds}
     const uint64_t *sets[3] = {r, w, e};
@@ -67,7 +147,7 @@ SKF("_ZN2nn6socket4BindEiPKNS0_8SockAddrEj", h_sk_Bind, int s, const void *a, un
 SKF("_ZN2nn6socket7ConnectEiPKNS0_8SockAddrEj", h_sk_Connect, int s, const void *a, unsigned n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKF("_ZN2nn6socket6ListenEii", h_sk_Listen, int s, int n) { (void)s; (void)n; return sk_fail(); }
 SKF("_ZN2nn6socket6AcceptEiPNS0_8SockAddrEPj", h_sk_Accept, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
-SKF("_ZN2nn6socket5CloseEi", h_sk_Close, int s) { (void)s; return sk_fail(); }
+HLE_FORCE("_ZN2nn6socket5CloseEi", "closes an event descriptor; there are no other sockets (cut: -1/ENETDOWN)", int, h_sk_Close, int s) { return efd_close(s) ? sk_fail() : 0; }
 SKF("_ZN2nn6socket11GetPeerNameEiPNS0_8SockAddrEPj", h_sk_GetPeerName, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKF("_ZN2nn6socket11GetSockNameEiPNS0_8SockAddrEPj", h_sk_GetSockName, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKF("_ZN2nn6socket10GetSockOptEiNS0_5LevelENS0_6OptionEPvPj", h_sk_GetSockOpt, int s, int l, int o, void *v, unsigned *n) { (void)s; (void)l; (void)o; (void)v; (void)n; return sk_fail(); }
@@ -85,9 +165,9 @@ SKF("_ZN2nn6socket4PollEPNS0_6PollFdEmi", h_sk_Poll, void *f, unsigned long n, i
 // to the host's Poll too
 SKF("poll", h_libc_Poll, void *f, unsigned long n, int t) { return dm_sk_poll(f, n, t); }
 SKF("_ZN2nn6socket6SelectEiPNS0_5FdSetES2_S2_PNS0_7TimeValE", h_sk_Select, int n, void *r, void *w, void *e, void *t) { return dm_sk_select(n, r, w, e, t); }
-SKF("_ZN2nn6socket7EventFdEmNS0_12EventFdFlagsE", h_sk_EventFd, unsigned long v, int f) { (void)v; (void)f; return sk_fail(); }
-SKF("_ZN2nn6socket11EventFdReadEiPm", h_sk_EventFdRead, int s, unsigned long *v) { (void)s; (void)v; return sk_fail(); }
-SKF("_ZN2nn6socket12EventFdWriteEim", h_sk_EventFdWrite, int s, unsigned long v) { (void)s; (void)v; return sk_fail(); }
+HLE_FORCE("_ZN2nn6socket7EventFdEmNS0_12EventFdFlagsE", "event descriptor: a local counter (needs no network)", int, h_sk_EventFd, unsigned long v, int f) { return efd_new(v, f); }
+HLE_FORCE("_ZN2nn6socket11EventFdReadEiPm", "event descriptor read: the counter (or one), cleared", int, h_sk_EventFdRead, int s, unsigned long *v) { return efd_read(s, (uint64_t *)v); }
+HLE_FORCE("_ZN2nn6socket12EventFdWriteEim", "event descriptor write: adds to the counter, wakes Poll and readers", int, h_sk_EventFdWrite, int s, unsigned long v) { return efd_write(s, v); }
 SKF("_ZN2nn6socket17ResolverGetOptionEPNS0_14ResolverOptionENS0_17ResolverOptionKeyE", h_sk_ResGet, void *o, int k) { (void)o; (void)k; return sk_fail(); }
 SKF("_ZN2nn6socket17ResolverSetOptionERKNS0_14ResolverOptionE", h_sk_ResSet, const void *o) { (void)o; return sk_fail(); }
 HLE_FORCE("_ZN2nn6socket4RecvEiPvmNS0_7MsgFlagE", "bsd socket service (cut)", long, h_sk_Recv, int s, void *b, unsigned long n, int f) { (void)s; (void)b; (void)n; (void)f; return sk_fail(); }
@@ -103,7 +183,7 @@ HLE_FORCE("_ZN2nn6socket12GetLastErrorEv", "socket error code kept by the host",
 SKF("nnsocketSocket", h_nsk_Socket, int a, int b, int c) { (void)a; (void)b; (void)c; return sk_fail(); }
 SKF("nnsocketBind", h_nsk_Bind, int s, const void *a, unsigned n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKF("nnsocketConnect", h_nsk_Connect, int s, const void *a, unsigned n) { (void)s; (void)a; (void)n; return sk_fail(); }
-SKF("nnsocketClose", h_nsk_Close, int s) { (void)s; return sk_fail(); }
+HLE_FORCE("nnsocketClose", "closes an event descriptor; there are no other sockets (cut: -1/ENETDOWN)", int, h_nsk_Close, int s) { return efd_close(s) ? sk_fail() : 0; }
 SKF("nnsocketGetPeerName", h_nsk_GetPeerName, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKF("nnsocketGetSockName", h_nsk_GetSockName, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKF("nnsocketGetSockOpt", h_nsk_GetSockOpt, int s, int l, int o, void *v, unsigned *n) { (void)s; (void)l; (void)o; (void)v; (void)n; return sk_fail(); }

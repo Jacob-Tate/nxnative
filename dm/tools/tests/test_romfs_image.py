@@ -56,6 +56,15 @@ class Images(unittest.TestCase):
         self.assertEqual(self.content('data/z'), b'')
         self.assertTrue(image.read_index(self.dst)['data/empty'][0])
 
+    def test_appledouble_files_beside_their_file_are_left_out(self):
+        (self.src / 'd').mkdir()
+        for n, b in (('a', b'A'), ('._a', b'meta'), ('d/b', b'B'), ('d/._b', b'meta'), ('._d', b'meta'), ('._lone', b'kept')):
+            (self.src / n).write_bytes(b)
+        image.pack(self.src, self.dst)
+        self.assertTrue(self.valid())
+        self.assertEqual(sorted(k for k in image.read_index(self.dst) if k), ['._lone', 'a', 'd', 'd/b'])
+        self.assertEqual(self.content('._lone'), b'kept')
+
     def test_reuse_rebuilds_changed_added_removed_and_renamed_files(self):
         (self.src / 'a').write_bytes(b'old')
         image.pack(self.src, self.dst, reuse=True)
